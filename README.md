@@ -16,8 +16,8 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | [Option A: Cloud Run](options/cloud-run.md) | gVisor always on, zero idle cost, 24h max runtime |
 | [Option B: GCE + Docker](options/gce-docker.md) | **Recommended.** COS + gVisor, full flexibility, ~$80/mo |
 | [Option C: GKE](options/gke.md) | Most defense-in-depth, scales to teams, highest complexity |
-| [HARNESS.md](HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
-| [HARNESS-DESIGN.md](HARNESS-DESIGN.md) | Multi-agent harness architecture: Opus orchestrator + Mythos worker, ADK vs LangGraph implementations, framework comparison |
+| [HARNESS.md](agentic-harness/HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
+| [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) | Multi-agent harness architecture: Opus orchestrator + Mythos worker, ADK vs LangGraph implementations, framework comparison |
 | [SandboxBench Paper](Prashant_Kulkarni_SadboxBench.pdf) | Research: "SandboxBench: A Comprehensive Evaluation Framework for AI Agent Containment" (Kulkarni et al., SPAR Fall 2025) |
 
 ## Security Architecture
@@ -70,7 +70,7 @@ The harness uses a multi-agent architecture where **Claude Opus** orchestrates a
 and auditable), `interrupt_before` enables human review of high-risk tool calls, and
 full checkpointing allows resuming multi-hour assessments after crashes.
 
-See [HARNESS-DESIGN.md](HARNESS-DESIGN.md) for full comparison, code examples for
+See [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) for full comparison, code examples for
 both ADK and LangGraph, and the security analysis behind this recommendation.
 
 ## SandboxBench Findings

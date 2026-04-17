@@ -437,7 +437,7 @@ graph LR
     style LOG_A fill:#3498db,stroke:#333,color:#fff
 ```
 
-See [HARNESS.md](HARNESS.md) for detailed Agent Gateway design, tool definitions,
+See [HARNESS.md](agentic-harness/HARNESS.md) for detailed Agent Gateway design, tool definitions,
 and policy configuration.
 
 The Agent Gateway is informed by SandboxBench Phase 1 findings on MCP server security.

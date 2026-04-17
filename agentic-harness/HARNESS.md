@@ -1,6 +1,6 @@
 # Secure Agentic Harness Recommendations for Mythos
 
-[Back to README](README.md) | [Architecture](APPROACH.md)
+[Back to README](../README.md) | [Architecture](../APPROACH.md)
 
 ## 1. Overview
 
@@ -8,7 +8,7 @@ The agentic harness is the orchestration layer between Vertex AI (Mythos) and th
 sandbox container. It receives tool calls from the model, applies security policies,
 executes approved calls in the sandbox, and returns filtered results. This document
 provides recommendations for building a secure harness informed by
-[SandboxBench](Prashant_Kulkarni_SadboxBench.pdf) findings on MCP server security
+[SandboxBench](../Prashant_Kulkarni_SadboxBench.pdf) findings on MCP server security
 and AI agent containment.
 
 ```mermaid
@@ -377,7 +377,7 @@ class Harness:
 ## 7. Validation with SandboxBench
 
 Before deploying Mythos, validate the harness against SandboxBench escape challenges.
-This is Step 13 of the [implementation plan](APPROACH.md#8-implementation-plan).
+This is Step 13 of the [implementation plan](../APPROACH.md#8-implementation-plan).
 
 ```mermaid
 graph LR

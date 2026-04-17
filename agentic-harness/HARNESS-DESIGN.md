@@ -1,6 +1,6 @@
 # Secure Harness Design: Multi-Agent Architecture
 
-[Back to README](README.md) | [Architecture](APPROACH.md) | [Harness Components](HARNESS.md)
+[Back to README](../README.md) | [Architecture](../APPROACH.md) | [Harness Components](HARNESS.md)
 
 ## 1. Overview
 
