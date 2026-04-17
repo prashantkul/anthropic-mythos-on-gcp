@@ -32,7 +32,7 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | 3 | **VPC Firewall + NAT** | Metadata service access, lateral movement, inbound attacks |
 | 4 | **Cloud NGFW / Palo Alto** | Encrypted C2, exploit delivery, covert channels |
 | 5 | **VPC Service Controls** | Cross-project data theft, stolen credential abuse |
-| 6 | **Agent Gateway** | Dangerous tool calls, shell injection, output exfiltration |
+| 6 | **[Agent Gateway](https://agentgateway.dev/)** | MCP/A2A proxy — CEL policies, RBAC, rate limiting, OpenTelemetry |
 | 7 | **On-Prem Proxy** | Policy violations missed by cloud controls, shadow IT |
 | 8 | **Monitoring & Audit** | Undetected breaches, compliance gaps |
 

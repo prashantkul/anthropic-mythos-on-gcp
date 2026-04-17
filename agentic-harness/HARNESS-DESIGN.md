@@ -810,21 +810,38 @@ The decisive factors:
 
 Regardless of framework, the following components are identical:
 
-### 6.1 Agent Gateway
+### 6.1 Agent Gateway ([agentgateway.dev](https://agentgateway.dev/))
 
-See [HARNESS.md Section 3.2](HARNESS.md) for full design.
+[Agent Gateway](https://github.com/agentgateway/agentgateway) is an open-source
+MCP/A2A proxy (Linux Foundation) that replaces custom gateway code with
+infrastructure-level policy enforcement. It sits between ADK agents and sandbox
+tool servers, enforcing security at the proxy layer.
 
-The gateway validates all Mythos tool calls:
+```mermaid
+graph LR
+    ADK[ADK Harness] -->|MCP| AGW[Agent Gateway]
+    AGW -->|CEL policy check| TOOLS[Tool Servers\nin Sandbox]
+    AGW --> OTEL[OpenTelemetry]
 
-| Check | Implementation |
+    style AGW fill:#6bcb77,stroke:#333
+    style TOOLS fill:#ff6b6b,stroke:#333,color:#fff
+```
+
+| Custom Code (previous design) | Agent Gateway Equivalent |
 |---|---|
-| Command blocklist | Deny `curl`, `wget`, `nc`, `docker`, `ssh`, `git`, `scp` |
-| Argument blocklist | Regex deny `169.254.169.254`, `/var/run/docker.sock`, `$(...)`, backticks |
-| Path restriction | All paths must be under `/target/` or `/tmp/` |
-| Rate limiting | Max 30 calls/min, 500/session |
-| Timeout | 180s per tool call, 300s for compilation |
-| Output size | Max 100KB per result |
-| Output scanning | Redact credential patterns (AWS keys, SSH keys, tokens) |
+| Command blocklist in Python | **CEL-based policies** in YAML config |
+| Argument regex denylist | **CEL expressions** on tool call arguments |
+| Rate limiting in ToolExecutor | **Built-in rate limiting** policies |
+| Custom audit logging to BQ | **OpenTelemetry** — Cloud Trace + Monitoring |
+| JWT/API key auth | **Built-in auth** — JWT, API keys, OAuth |
+
+**Deployment**: On GCE, runs as a container alongside the harness. On GKE,
+deploys as a pod with Kubernetes Gateway API and MCP service discovery.
+
+The `SecureToolExecutor` in the ADK code (Section 4.1) remains as a
+**defense-in-depth fallback** — two independent checkpoints for tool calls.
+
+See [HARNESS.md](HARNESS.md) for additional component-level design details.
 
 ### 6.2 Sandbox Manager
 

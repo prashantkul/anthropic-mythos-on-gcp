@@ -206,7 +206,7 @@ graph LR
     R2 --> R3["Ring 3\nVPC + Firewall"]
     R3 --> R4["Ring 4\nCloud NGFW"]
     R4 --> R5["Ring 5\nVPC-SC Perimeter"]
-    R5 --> R6["Ring 6\nAgent Gateway"]
+    R5 --> R6["Ring 6\nAgent Gateway\n(MCP/A2A Proxy)"]
     R6 --> R7["Ring 7\nOn-Prem Proxy"]
     R7 --> R8["Ring 8\nMonitoring"]
 
@@ -229,7 +229,7 @@ graph LR
 | 3 | VPC + Firewall | Deny-all ingress, block metadata `169.254.169.254`, Cloud NAT only, IAP for SSH |
 | 4 | Cloud NGFW | L7 DPI, IPS/IDS signatures, TLS inspection, URL filtering, DNS security |
 | 5 | VPC-SC Perimeter | Ingress from orchestrator SA + corp IPs only, deny all cross-project egress |
-| 6 | Agent Gateway | Tool call filtering, rate limiting, content scanning, Vertex AI audit trail |
+| 6 | Agent Gateway (MCP/A2A proxy) | [Agent Gateway](https://agentgateway.dev/) — CEL-based policies, RBAC, rate limiting, OpenTelemetry observability |
 | 7 | On-Prem Proxy | Corporate DLP, CASB visibility, SOC/SIEM integration via Cloud VPN |
 | 8 | Monitoring | Cloud Audit Logs, VPC Flow Logs, NGFW logs, proxy logs, alerting policies |
 
@@ -430,38 +430,59 @@ graph LR
 | `corp-network` | Source IP in corporate CIDR range, device is managed | Researcher accessing GCS/Vertex AI console |
 | `vpc-internal` | Request originates from `mythos-vpc` | Orchestrator SA making API calls |
 
-### 4.7 Ring 6 — Agent Gateway
+### 4.7 Ring 6 — Agent Gateway (MCP/A2A Proxy)
 
-The Agent Gateway is the policy enforcement point between Vertex AI (Mythos) and the
-orchestrator. It inspects, filters, and logs all tool calls before they reach the
-sandbox.
+[Agent Gateway](https://agentgateway.dev/) is an open-source proxy (Linux Foundation,
+contributors include Google, Microsoft, Apple, AWS) built on AI-native protocols
+(MCP and A2A). It replaces custom gateway code with an infrastructure-level policy
+enforcement layer for all agent-to-tool and agent-to-agent communication.
 
 ```mermaid
 graph LR
-    IN[Tool Call] --> PARSE[Parse Args]
-    PARSE --> BLOCK{Blocklist?}
-    BLOCK -->|denied| LOG_D[Log + Deny]
-    BLOCK -->|pass| SANITIZE[Sanitize]
-    SANITIZE --> RATE{Rate OK?}
-    RATE -->|over limit| LOG_D
-    RATE -->|pass| EXEC[Execute]
-    EXEC --> SCAN[Scan Output]
-    SCAN --> OUT[Return Result]
-    OUT --> LOG_A[Audit Log]
+    ADK[ADK Agent\nMythos] -->|MCP| AGW[Agent Gateway\nCEL policies, RBAC\nrate limits, auth]
+    AGW -->|approved| TOOLS[Tool Servers\nin Sandbox]
+    AGW -->|denied| DENY[Policy Deny]
+    AGW -->|telemetry| OTEL[OpenTelemetry\nCloud Trace + Monitoring]
 
-    style LOG_D fill:#e74c3c,stroke:#333,color:#fff
-    style EXEC fill:#6bcb77,stroke:#333
-    style LOG_A fill:#3498db,stroke:#333,color:#fff
+    style AGW fill:#6bcb77,stroke:#333
+    style TOOLS fill:#ff6b6b,stroke:#333,color:#fff
+    style DENY fill:#e74c3c,stroke:#333,color:#fff
+    style OTEL fill:#3498db,stroke:#333,color:#fff
 ```
 
-See [HARNESS.md](agentic-harness/HARNESS.md) for detailed Agent Gateway design, tool definitions,
-and policy configuration.
+**Why Agent Gateway instead of custom code**: SandboxBench Phase 1 showed that
+MCP servers using `shell=True` without validation were trivially exploitable (70%
+of baseline implementations). Agent Gateway enforces security at the proxy layer —
+policies are infrastructure configuration, not application code that can be bypassed.
 
-The Agent Gateway is informed by SandboxBench Phase 1 findings on MCP server security.
-Our research showed that MCP servers using `shell=True` without validation were trivially
-exploitable (70% of baseline implementations). The gateway applies the "secure"
-implementation pattern from Section 3.1.3 of the paper: defense-in-depth with input
-validation, argument sanitization, and command allowlisting.
+**Key capabilities**:
+
+| Capability | How It Works | Replaces |
+|---|---|---|
+| **CEL-based policies** | Fine-grained access control rules on tool calls using Common Expression Language | Custom command blocklists in application code |
+| **RBAC** | Role-based access control per agent, per tool | Custom per-tool validation functions |
+| **Rate limiting** | Built-in rate limiting policies on the proxy | Custom rate tracking in gateway code |
+| **Authentication** | JWT, API keys, OAuth (Auth0, Keycloak) | Custom auth middleware |
+| **MCP Gateway** | Aggregates multiple MCP tool servers behind a single endpoint | Custom tool routing |
+| **OpenTelemetry** | Metrics, logs, distributed tracing — native integration with Cloud Trace and Cloud Monitoring | Custom audit logging to BigQuery |
+| **Secret Manager** | Credentials stored in GCP Secret Manager, not in application config | Environment variables or mounted secrets |
+
+**Deployment on GCP**:
+
+| Platform | How |
+|---|---|
+| **GKE** | Deploy as pod with Kubernetes Gateway API support. Native service discovery for MCP tool servers |
+| **Cloud Run** | `gcloud run deploy agentgateway --image ghcr.io/agentgateway/agentgateway:latest --port 3000` |
+| **GCE** | Run as container alongside the harness on the same VM |
+
+**How it integrates with ADK**: ADK agents connect to tools through Agent Gateway's
+MCP endpoint. Sandbox tool servers (running inside Firecracker micro-VMs) register
+as MCP servers behind the gateway. The gateway enforces CEL policies on every tool
+call before it reaches the sandbox — security enforcement is in infrastructure,
+not in application code.
+
+See [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) for how Agent Gateway
+integrates with the ADK-based multi-agent harness.
 
 ### 4.8 Ring 7 — On-Premises Proxy Routing
 
@@ -726,11 +747,12 @@ Once we agree on the approach, the implementation order is:
 8. **Source Code Repos** — Set up CSR mirrors for target repos, create GCS staging bucket
 9. **Container images** — Build and push hardened sandbox base image + Squid proxy to Artifact Registry
 10. **Compute** — Deploy GCE VM, install Firecracker (or Kata Containers), deploy sandbox micro-VMs
-11. **Harness** — Deploy multi-agent harness: Opus orchestrator, Mythos worker, Agent Gateway with tool call policies
-12. **Verification pipeline** — Implement two-sandbox trust boundary (Find + Grade). Grade agent verifies in fresh micro-VM with 3/3 reproduction and 5-criteria checklist
-13. **Resilience** — Implement session-ID resume with exponential backoff for multi-hour runs
-14. **Monitoring** — Cloud Audit Logs, log sinks to BigQuery, alert policies
-15. **Validation** — Run SandboxBench escape challenges against the environment to verify containment
+11. **Agent Gateway** — Deploy [Agent Gateway](https://agentgateway.dev/) as MCP/A2A proxy. Configure CEL policies, RBAC, rate limiting, OpenTelemetry integration with Cloud Trace
+12. **Harness** — Deploy ADK-based multi-agent harness: Opus orchestrator, Mythos worker, SecureToolExecutor as defense-in-depth fallback behind Agent Gateway
+13. **Verification pipeline** — Implement two-sandbox trust boundary (Find + Grade). Grade agent verifies in fresh micro-VM with 3/3 reproduction and 5-criteria checklist
+14. **Resilience** — Implement session-ID resume with exponential backoff for multi-hour runs
+15. **Monitoring** — Cloud Audit Logs, log sinks to BigQuery, alert policies
+16. **Validation** — Run SandboxBench escape challenges against the environment to verify containment
 
 Steps 12-13 incorporate industry-standard verification patterns for
 execution-verified vulnerability discovery — findings are not reported
