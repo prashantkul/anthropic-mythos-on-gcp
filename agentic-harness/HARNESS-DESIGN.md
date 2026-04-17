@@ -157,45 +157,129 @@ sequenceDiagram
     GW->>S: docker exec: gcc -o poc exploit.c
     S->>GW: build output
     GW->>M: build output
-    M->>O: "Found SQLi in auth.c:142, PoC compiled"
-
-    Note over O: Reviews finding, plans follow-up
-    O->>M: delegate("Verify SQLi exploitability, test with ASAN")
-
     M->>GW: run_command("./poc --payload='...'")
     GW->>S: docker exec: ./poc ...
-    S->>GW: crash output
+    S->>GW: crash output (ASAN trace)
     GW->>M: crash output
-    M->>O: "Confirmed: exploitable SQLi, CVSS 9.1"
 
-    Note over O: Produces final report
-    O->>O: store_report("SQLi in auth module", report, "critical")
-    O->>R: Final assessment report
+    M->>O: "Found heap-buffer-overflow in auth.c:142, PoC at /tmp/poc.bin"
+
+    Note over O,S: Verification Phase (Grade)
+    O->>O: Extract PoC bytes from Find Sandbox
+    O->>O: Create fresh Grade Sandbox (same image)
+
+    rect rgb(255, 240, 230)
+        Note over O,S: Grade: fresh sandbox, only PoC bytes cross
+        O->>S: Copy poc.bin into fresh Grade Sandbox
+        O->>S: Run reproduction 3/3 times
+        S->>O: 3/3 ASAN crash confirmed
+        O->>O: 5-criteria check: PASS
+    end
+
+    O->>O: Destroy both sandboxes
+    O->>O: store_report("heap-buffer-overflow auth.c:142", report, "critical")
+    O->>R: Verified vulnerability report
 ```
 
-### 3.2 The Harness Is a While Loop
+### 3.2 Verification: Two-Sandbox Trust Boundary
 
-At its core, the harness is two nested loops:
+A vulnerability is not
+confirmed until a **separate agent** reproduces it in a **fresh sandbox**
+built from the same base image. Only the PoC artifact crosses the boundary.
+
+```mermaid
+graph LR
+    FIND[Find Sandbox\nMythos explores + crafts PoC] -->|PoC bytes only| GRADE[Grade Sandbox\nfresh micro-VM, same image]
+    GRADE -->|3/3 repro?| VERDICT{Pass?}
+    VERDICT -->|yes| OPUS[Report to Opus]
+    VERDICT -->|no| DISCARD[Discard finding]
+
+    style FIND fill:#ff6b6b,stroke:#333,color:#fff
+    style GRADE fill:#e67e22,stroke:#333,color:#fff
+    style DISCARD fill:#999,stroke:#333,color:#fff
+```
+
+**Why this matters**: The Find agent can write anywhere inside its sandbox.
+Without verification, it could claim a vulnerability by pre-positioning crash
+state. A fresh sandbox from the same image is pristine — the only way the
+PoC reproduces is if the bug is real.
+
+**Grade criteria**:
+
+| Criterion | Check |
+|---|---|
+| 1. PoC file exists and is non-empty | Bytes were actually written, not just narrated |
+| 2. Reproduction succeeds 3/3 times | Deterministic crash, not a flaky race |
+| 3. Not an OOM / allocation-size-too-big | Real memory corruption, not resource exhaustion |
+| 4. Crash is in project code | Stack trace shows project functions, not libc/kernel |
+| 5. Deterministic crash type | Same ASAN error type across all 3 runs |
+
+**Implementation with Firecracker**: Two micro-VMs from the same base image.
+The harness copies only the PoC file (bytes) from Find VM to Grade VM via
+the host filesystem. The Grade agent runs in a separate micro-VM and has
+no access to the Find agent's state, filesystem, or execution history.
+
+### 3.3 Resilience: Session-ID Resume
+
+Multi-hour vulnerability research will hit API errors (429 rate limits,
+upstream 5xx, network blips). The harness must survive these without
+losing work.
+
+**Pattern**:
+
+```
+On API error or process crash:
+    1. Preserve session ID from initial handshake
+    2. Exponential backoff: min(2^attempt, max_backoff) seconds
+    3. Resume session (full context restored)
+    4. Append new messages to existing transcript (no duplication)
+    5. Cap at configurable max resume attempts per agent run
+```
+
+For LangGraph: this maps to checkpoint persistence (e.g., SQLite or Redis
+backend). On crash, `harness.invoke()` resumes from the last checkpointed
+state — the graph node, the full `HarnessState`, and accumulated findings
+are all restored.
+
+For ADK: implement via try/except around `runner.run()` with session-ID
+tracking and retry logic.
+
+### 3.4 The Harness Pipeline
+
+The full pipeline incorporates Find, Verify (Grade), and Report:
 
 ```
 OUTER LOOP (Opus):
     Send prompt to Opus
     While Opus requests tool calls:
         If tool is "delegate_to_mythos":
-            INNER LOOP (Mythos):
-                Send task to Mythos
+            FIND PHASE (Mythos, high turn budget):
+                Send task to Mythos in Find Sandbox
                 While Mythos requests tool calls:
                     Gateway validates tool call
-                    If approved: execute in sandbox, return output
+                    If approved: execute in Find Sandbox, return output
                     If denied: return denial reason
-                Return Mythos findings to Opus
+                Extract PoC artifact from Find Sandbox
+
+            GRADE PHASE (Verifier, fresh sandbox, 50 turns):
+                Create fresh Grade Sandbox from same image
+                Copy only PoC bytes into Grade Sandbox
+                Run reproduction 3/3 times
+                Apply 5-criteria checklist
+                Destroy Grade Sandbox
+
+                If PASS: return verified finding to Opus
+                If FAIL: return "finding did not verify" to Opus
+
+            Destroy Find Sandbox
         Else:
             Execute Opus tool (store_report, query_audit)
     Return final report
 ```
 
 This is the same structure regardless of which framework (ADK, LangGraph, custom)
-you use. The framework manages the loops; you provide the gateway and sandbox.
+you use. The framework manages the loops; you provide the gateway, sandbox, and
+verification.
 
 ## 4. Framework Implementations
 
@@ -750,16 +834,26 @@ Every tool call, gateway decision, delegation, and result is logged to BigQuery:
 
 ## 7. Resource Budgets
 
-Per-session limits to prevent runaway exploration:
+Per-session limits. Deep vulnerability research requires sustained
+exploration — the cycle of read source, hypothesize, craft input, run
+binary, observe crash, and refine is inherently iterative. Conservative
+turn budgets produce shallow findings.
 
-| Resource | Opus | Mythos (per delegation) | Mythos (session total) |
+| Resource | Opus | Mythos Find (per delegation) | Mythos Grade (per verification) |
 |---|---|---|---|
-| Max tool calls | 50 | 100 | 500 |
+| Max turns | 50 | **High** (tune per target complexity) | 50 |
 | Max delegations | 10 | — | — |
-| Max runtime | 4 hours | 30 min per delegation | 3 hours |
-| Max output | — | 100KB per tool call | 50MB total |
-| Max container CPU | — | 4 vCPU | — |
-| Max container memory | — | 8GB | — |
+| Max runtime | 8 hours | **4 hours** per delegation | 15 min per verification |
+| Max output | — | 100KB per tool call | 100KB per tool call |
+| Max container CPU | — | 4 vCPU | 4 vCPU |
+| Max container memory | — | 8GB | 4GB |
+| Resume attempts | — | Configurable (exp backoff) | 5 |
+
+**Turn budget guidance**: SandboxBench showed frontier models spending
+significant time and tokens on single challenges (multi-minute explorations
+with hundreds of thousands of tokens). Mythos is more capable but the
+exploration cycle is the same. Start with a high turn budget and tune
+based on observed behavior per target.
 
 ## 8. Validation
 

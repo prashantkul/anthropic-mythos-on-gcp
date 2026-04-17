@@ -724,13 +724,19 @@ Once we agree on the approach, the implementation order is:
 6. **Cloud NGFW** — Deploy NGFW endpoint, security profiles, firewall policy
 7. **Cloud VPN** — IPsec tunnel to on-prem proxy (if applicable)
 8. **Source Code Repos** — Set up CSR mirrors for target repos, create GCS staging bucket
-9. **Container images** — Build and push hardened sandbox Dockerfile + Squid proxy to Artifact Registry
+9. **Container images** — Build and push hardened sandbox base image + Squid proxy to Artifact Registry
 10. **Compute** — Deploy GCE VM, install Firecracker (or Kata Containers), deploy sandbox micro-VMs
-11. **Agent Gateway** — Deploy gateway service with tool call policies
-12. **Monitoring** — Cloud Audit Logs, log sinks to BigQuery, alert policies
-13. **Validation** — Run SandboxBench escape challenges against the environment to verify containment
+11. **Harness** — Deploy multi-agent harness: Opus orchestrator, Mythos worker, Agent Gateway with tool call policies
+12. **Verification pipeline** — Implement two-sandbox trust boundary (Find + Grade). Grade agent verifies in fresh micro-VM with 3/3 reproduction and 5-criteria checklist
+13. **Resilience** — Implement session-ID resume with exponential backoff for multi-hour runs
+14. **Monitoring** — Cloud Audit Logs, log sinks to BigQuery, alert policies
+15. **Validation** — Run SandboxBench escape challenges against the environment to verify containment
 
-Step 13 is critical: we use our own SandboxBench framework to validate the
+Steps 12-13 incorporate industry-standard verification patterns for
+execution-verified vulnerability discovery — findings are not reported
+until reproduced by an independent agent in a fresh sandbox.
+
+Step 15 is critical: we use our own SandboxBench framework to validate the
 containment before running Mythos. This closes the loop between our prior research
 and this deployment.
 
