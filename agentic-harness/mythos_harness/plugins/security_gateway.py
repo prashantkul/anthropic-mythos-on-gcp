@@ -23,10 +23,12 @@ ARG_DENYLIST_PATTERNS = [
     re.compile(r"169\.254\.169\.254"),
     re.compile(r"/var/run/docker\.sock"),
     re.compile(r"/proc/1/root"),
-    re.compile(r"\$\("),
-    re.compile(r"`[^`]+`"),
-    re.compile(r"\|\s*(nc|netcat|curl|wget|bash|sh)\b"),
-    re.compile(r">\s*/dev/"),
+    re.compile(r"/proc/sysrq"),
+    re.compile(r"\$\(\s*(curl|wget|nc|netcat|ssh|scp)"),
+    re.compile(r"`\s*(curl|wget|nc|netcat|ssh|scp)"),
+    re.compile(r"\|\s*(nc|netcat|curl|wget)\b"),
+    re.compile(r">\s*/dev/(sd|null|zero|tcp|udp)"),
+    re.compile(r"mkfifo.*/dev/"),
 ]
 
 CREDENTIAL_PATTERNS = [

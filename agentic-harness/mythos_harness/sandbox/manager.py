@@ -37,7 +37,7 @@ def create(
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--user=1000:1000",
-        "--tmpfs", "/tmp:rw,noexec,nosuid,size=512m",
+        "--tmpfs", "/tmp:rw,nosuid,size=512m",
     ]
     if read_only:
         cmd.append("--read-only")

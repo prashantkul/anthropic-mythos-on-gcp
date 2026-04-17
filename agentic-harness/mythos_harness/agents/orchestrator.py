@@ -60,6 +60,8 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
     _verifier_agent = verifier.create(harness_config.models.verifier)
     _analyst_agent = analyst.create(harness_config.models.analyst)
 
+    _last_poc_bytes: dict[str, bytes] = {}
+
     def delegate_find(task: str, focus_area: str = "", known_bugs: str = "") -> str:
         """Delegate a vulnerability research task to the Mythos finder agent.
 
@@ -101,17 +103,16 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             if not poc_bytes:
                 return f"PoC path claimed ({poc_path}) but file is empty or missing."
 
+            _last_poc_bytes["data"] = poc_bytes
+
             finding = {
                 "poc_path": poc_path,
                 "reproduction_command": repro_cmd,
                 "crash_type": crash_type or "unknown",
                 "crash_output": crash_output[:5000],
                 "poc_size": len(poc_bytes),
-                "container": container_name,
-                "_poc_bytes": poc_bytes,
-                "_repro_cmd": repro_cmd,
             }
-            return json.dumps({k: v for k, v in finding.items() if not k.startswith("_")}, indent=2)
+            return json.dumps(finding, indent=2)
         finally:
             sandbox.destroy(container_name)
 
@@ -138,13 +139,21 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
         sandbox_tools.set_container(grade_container)
 
         try:
+            poc_bytes = _last_poc_bytes.get("data")
+            if not poc_bytes:
+                return json.dumps({"verdict": "FAIL", "error": "No PoC bytes available from finder"})
+
+            if poc_path not in reproduction_command:
+                return json.dumps({"verdict": "FAIL", "error": f"poc_path '{poc_path}' not in reproduction_command"})
+
+            sandbox.write_file(grade_container, "/tmp/poc.bin", poc_bytes)
             adapted_cmd = reproduction_command.replace(poc_path, "/tmp/poc.bin")
 
             prompt = (
                 f"Verify this vulnerability in your fresh sandbox.\n\n"
                 f"Reproduction command: {adapted_cmd}\n"
                 f"Expected crash type: {crash_type}\n"
-                f"PoC file is at /tmp/poc.bin\n"
+                f"PoC file is at /tmp/poc.bin ({len(poc_bytes)} bytes)\n"
                 f"Source root: {target.source_root}\n\n"
                 f"Run the 5-criteria verification checklist."
             )
