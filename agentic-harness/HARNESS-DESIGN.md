@@ -283,68 +283,93 @@ verification.
 
 ## 4. Framework Implementations
 
-### 4.1 Google ADK
+### 4.1 Google ADK with External Gateway (Recommended)
 
-ADK's multi-agent support uses agent-to-agent delegation. Mythos runs as a
-sub-agent invoked from inside Opus's `delegate_to_mythos` tool function.
+ADK is extensible — you can inject a **Custom ToolExecutor** that intercepts
+all tool calls before execution. The gateway becomes a single external
+checkpoint, not scattered across tool functions.
 
 ```python
-from google.adk import Agent, Tool
+from google.adk import Agent, Tool, ToolExecutor, ToolContext
 from google.adk.runners import VertexAiRunner
 
-gateway = AgentGateway()
-sandbox = SandboxManager()
+# ── External Gateway as Custom ToolExecutor ─────────────
+# All Mythos tool calls route through this single checkpoint.
+# ADK calls execute() for every tool — we validate, sandbox-execute,
+# scan output, and return.
 
-# ── Mythos Tools (all sandboxed) ────────────────────────
+class SecureToolExecutor(ToolExecutor):
+    """External Agent Gateway. Intercepts all tool calls from Mythos."""
+
+    def __init__(self, gateway: AgentGateway, sandbox: SandboxManager,
+                 logger: AuditLogger):
+        self.gateway = gateway
+        self.sandbox = sandbox
+        self.logger = logger
+
+    def execute(self, tool: Tool, args: dict, context: ToolContext) -> str:
+        tool_name = tool.name
+
+        # 1. Gateway validates
+        approved, reason = self.gateway.validate(tool_name, args)
+        if not approved:
+            self.logger.log("denied", tool_name, args, reason)
+            return f"DENIED: {reason}"
+
+        # 2. Execute in sandbox (never on host)
+        if tool_name == "read_file":
+            result = self.sandbox.execute(["cat", args["path"]])
+        elif tool_name == "run_command":
+            result = self.sandbox.execute(
+                ["sh", "-c", args["command"]], timeout=180)
+        elif tool_name == "search_code":
+            result = self.sandbox.execute(
+                ["grep", "-rn", "--include", args.get("file_glob", "*"),
+                 args["pattern"], "/target/"])
+        elif tool_name == "compile":
+            result = self.sandbox.execute(
+                ["sh", "-c", args["build_command"]], timeout=300)
+        elif tool_name == "analyze_binary":
+            result = self.sandbox.execute([args["tool"], args["binary_path"]])
+        else:
+            return f"Unknown tool: {tool_name}"
+
+        # 3. Scan output before returning to model
+        output = result["stdout"]
+        if result.get("stderr"):
+            output += "\n" + result["stderr"]
+        clean = self.gateway.scan_output(output)
+
+        self.logger.log("approved", tool_name, args)
+        return clean
+
+# ── Mythos Tools (declarations only — execution is in the gateway) ──
 
 def read_file(path: str) -> str:
     """Read a file from the target codebase."""
-    ok, reason = gateway.validate("read_file", {"path": path})
-    if not ok:
-        return f"DENIED: {reason}"
-    result = sandbox.execute(["cat", path])
-    return gateway.scan_output(result["stdout"])
+    pass  # SecureToolExecutor handles execution
 
 def run_command(command: str) -> str:
     """Run a shell command in the analysis sandbox."""
-    ok, reason = gateway.validate("run_command", {"command": command})
-    if not ok:
-        return f"DENIED: {reason}"
-    result = sandbox.execute(["sh", "-c", command], timeout=180)
-    return gateway.scan_output(result["stdout"])
+    pass
 
 def search_code(pattern: str, file_glob: str = "*.c") -> str:
     """Search for patterns in target codebase."""
-    ok, reason = gateway.validate("search_code",
-        {"pattern": pattern, "file_glob": file_glob})
-    if not ok:
-        return f"DENIED: {reason}"
-    result = sandbox.execute(
-        ["grep", "-rn", "--include", file_glob, pattern, "/target/"])
-    return gateway.scan_output(result["stdout"])
+    pass
 
 def compile_code(build_command: str, working_dir: str = "/target") -> str:
     """Compile target code in sandbox."""
-    ok, reason = gateway.validate("compile",
-        {"build_command": build_command})
-    if not ok:
-        return f"DENIED: {reason}"
-    result = sandbox.execute(["sh", "-c", build_command], timeout=300)
-    return gateway.scan_output(result["stdout"] + "\n" + result["stderr"])
+    pass
 
 def analyze_binary(binary_path: str, tool: str = "strings") -> str:
     """Run static analysis on a binary in the sandbox."""
-    allowed_tools = ["strings", "objdump", "readelf", "file", "nm"]
-    if tool not in allowed_tools:
-        return f"DENIED: tool must be one of {allowed_tools}"
-    ok, reason = gateway.validate("analyze_binary",
-        {"binary_path": binary_path, "tool": tool})
-    if not ok:
-        return f"DENIED: {reason}"
-    result = sandbox.execute([tool, binary_path])
-    return gateway.scan_output(result["stdout"])
+    pass
 
-# ── Mythos Worker Agent ─────────────────────────────────
+# ── Mythos Worker Agent (uses SecureToolExecutor) ───────
+
+gateway = AgentGateway()
+sandbox = SandboxManager()
+logger = AuditLogger()
 
 mythos_agent = Agent(
     model="claude-mythos@latest",
@@ -356,6 +381,7 @@ mythos_agent = Agent(
         Tool(compile_code),
         Tool(analyze_binary),
     ],
+    tool_executor=SecureToolExecutor(gateway, sandbox, logger),
     system_prompt=(
         "You are a vulnerability researcher. You have access to target "
         "code mounted at /target/. Your job is to find security "
@@ -373,31 +399,19 @@ mythos_agent = Agent(
     ),
 )
 
-# ── Opus Tools (not sandboxed) ──────────────────────────
+# ── Opus Tools (not sandboxed — direct Python SDK calls) ──
 
 def delegate_to_mythos(task: str, context: str = "") -> str:
-    """Delegate a vulnerability research task to the Mythos worker.
-
-    Args:
-        task: Specific research task for Mythos.
-        context: Prior findings or focus areas to guide analysis.
-    """
+    """Delegate a vulnerability research task to the Mythos worker."""
     prompt = f"{task}\n\nContext:\n{context}" if context else task
     runner = VertexAiRunner(project="mythos-project")
     result = runner.run(mythos_agent, prompt=prompt)
-    logger.log("delegation", "delegate_to_mythos",
-               {"task": task}, str(result))
+    logger.log("delegation", "delegate_to_mythos", {"task": task})
     return str(result)
 
 def store_report(title: str, content: str,
                  severity: str = "medium") -> str:
-    """Store a vulnerability report to GCS.
-
-    Args:
-        title: Short title for the report.
-        content: Full report content in markdown.
-        severity: One of: critical, high, medium, low, info.
-    """
+    """Store a vulnerability report to GCS."""
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     path = f"reports/{timestamp}_{severity}_{title}.md"
     blob = gcs_bucket.blob(path)
@@ -406,11 +420,7 @@ def store_report(title: str, content: str,
     return f"Report stored at gs://{gcs_bucket.name}/{path}"
 
 def query_audit_log(query_description: str) -> str:
-    """Query the audit log for prior findings or session history.
-
-    Args:
-        query_description: Natural language description of what to find.
-    """
+    """Query the audit log for prior findings or session history."""
     results = bq_client.query(
         "SELECT timestamp, event, tool, decision "
         "FROM `mythos_audit.session_log` "
@@ -423,8 +433,7 @@ def query_audit_log(query_description: str) -> str:
             ]
         ),
     )
-    rows = [dict(r) for r in results]
-    return json.dumps(rows, indent=2, default=str)
+    return json.dumps([dict(r) for r in results], indent=2, default=str)
 
 # ── Opus Orchestrator Agent ─────────────────────────────
 
@@ -466,25 +475,36 @@ def run_assessment(target_code_path: str, task: str):
     finally:
         sandbox.destroy()
         logger.flush()
-
-if __name__ == "__main__":
-    report = run_assessment(
-        target_code_path="/workspace/repos/target-app",
-        task=(
-            "Conduct a comprehensive security assessment of /target/. "
-            "Focus on: authentication and authorization, input validation "
-            "and injection flaws, memory safety issues, cryptographic "
-            "weaknesses, and configuration security."
-        ),
-    )
-    print(report)
 ```
 
-**ADK characteristics:**
-- Mythos runs as a sub-agent inside Opus's `delegate_to_mythos` tool function
-- The gateway is hidden inside each tool function — not visible in the framework
-- Simple to understand — feels like regular function calls
+**Key design: `SecureToolExecutor`**
+
+```mermaid
+graph LR
+    MYTHOS[Mythos Agent] -->|tool call| EXEC[SecureToolExecutor]
+    EXEC --> GW{Gateway\nValidate}
+    GW -->|approved| SBX[Sandbox\ndocker exec]
+    GW -->|denied| DENY[Return denial]
+    SBX --> SCAN[Scan Output]
+    SCAN --> MYTHOS
+
+    style EXEC fill:#6bcb77,stroke:#333
+    style GW fill:#f39c12,stroke:#333
+    style SBX fill:#ff6b6b,stroke:#333,color:#fff
+```
+
+All Mythos tool calls pass through a single `SecureToolExecutor.execute()` method.
+The gateway is external to the tool definitions — tools are declarations only
+(schemas for the model), not implementations. This gives the same single-checkpoint
+visibility as LangGraph's gateway node, within the ADK ecosystem.
+
+**ADK characteristics with external gateway:**
+- Gateway is a single class (`SecureToolExecutor`), not scattered across tool functions
+- All tool calls route through one `execute()` method — auditable, testable
+- Tool definitions are pure schemas — no security logic in tool functions
+- Native Vertex AI integration — no adapter layer
 - ADK manages conversation state, retries, and token limits
+- All-Google ecosystem: Vertex AI, Cloud Logging, IAM
 
 ### 4.2 LangGraph
 
@@ -723,70 +743,68 @@ graph TB
 
 ### 5.1 Architecture Comparison
 
-| Dimension | Google ADK | LangGraph |
+| Dimension | Google ADK + ToolExecutor | LangGraph |
 |---|---|---|
 | **Agent loop** | ADK manages internally | Graph nodes and edges |
 | **Multi-agent** | Sub-agent via function call inside tool | Explicit subgraph with delegation and return nodes |
-| **Gateway placement** | Hidden inside tool functions | First-class graph node |
-| **Security visibility** | Low — gateway logic in each tool fn | High — gateway is a visible, auditable node |
-| **Human-in-the-loop** | Supported but basic callback | Built-in: `interrupt_before` on any node |
-| **State management** | ADK-managed, opaque | Explicit `TypedDict`, inspectable at every node |
-| **Checkpointing** | Basic | Full: persist to DB, resume from any node |
-| **Debugging** | ADK traces | LangSmith: replay any node, inspect state diffs |
-| **Vertex AI integration** | Native — tightest coupling | Via `langchain-google-vertexai` adapter |
-| **Framework lock-in** | Google ecosystem | LangChain ecosystem |
+| **Gateway placement** | `SecureToolExecutor` — single class, all tools route through it | Gateway graph node — single node, all tools route through it |
+| **Security visibility** | High — one `execute()` method, auditable and testable | High — visible node in graph visualization and traces |
+| **Human-in-the-loop** | `before_tool_call` callback | `interrupt_before` on any node |
+| **State management** | ADK-managed | Explicit `TypedDict`, inspectable at every node |
+| **Checkpointing** | Session-ID resume (must implement) | Built-in: persist to DB, resume from any node |
+| **Debugging** | ADK traces + Cloud Logging | LangSmith: replay any node, inspect state diffs |
+| **Vertex AI integration** | Native — tightest coupling, no adapter | Via `langchain-google-vertexai` adapter |
+| **Ecosystem** | All-Google: Vertex AI, Cloud Logging, IAM | LangChain: multi-provider, additional dependency |
 | **Complexity** | Lower — function calls feel natural | Higher — graph DSL, state schema, routing functions |
-| **Maturity** | Newer (2025) | Established, large community |
 
 ### 5.2 Security Comparison
 
-| Security Property | Google ADK | LangGraph |
+| Security Property | Google ADK + ToolExecutor | LangGraph |
 |---|---|---|
-| **Gateway as auditable checkpoint** | No — scattered across tool functions | Yes — single node, all tool calls pass through it |
-| **Can pause before dangerous tools** | Manual — must build callback logic | `interrupt_before=["gateway"]` — one line |
-| **Replay for forensics** | Limited — must implement logging | Built-in — checkpoint + replay any state |
-| **Tool call visibility in traces** | Tool inputs/outputs logged | Full graph execution trace with state at each step |
-| **Credential separation enforced by framework** | No — you must enforce in tool functions | No — you must enforce in node design. But node separation makes it clearer |
-| **Rate limiting across delegations** | Must track in gateway manually | State accumulates `delegation_count` — visible and enforceable |
+| **Gateway as auditable checkpoint** | Yes — `SecureToolExecutor.execute()` is a single entry point | Yes — single graph node |
+| **Can pause before dangerous tools** | `before_tool_call` callback with approval logic | `interrupt_before=["gateway"]` |
+| **Replay for forensics** | Must implement transcript logging (straightforward with Cloud Logging) | Built-in checkpoint + replay |
+| **Tool call visibility in traces** | All calls logged in `execute()` | Full graph execution trace with state at each step |
+| **Credential separation** | Enforced in ToolExecutor — tools are schemas only, no credentials | Enforced in node design |
+| **Rate limiting** | Tracked in ToolExecutor state | Tracked in graph state |
 
 ### 5.3 Operational Comparison
 
-| Dimension | Google ADK | LangGraph |
+| Dimension | Google ADK + ToolExecutor | LangGraph |
 |---|---|---|
-| **Lines of code (this design)** | ~150 (agent + tools) | ~200 (graph + nodes + state) |
-| **Time to prototype** | Faster — less boilerplate | Slower — graph design upfront, but easier to extend |
-| **Production readiness** | Newer, less battle-tested | Established, used in production agentic systems |
-| **Monitoring** | Cloud Logging integration | LangSmith SaaS or self-hosted |
-| **Scaling** | Vertex AI handles scaling | Must manage LangGraph server or use LangGraph Cloud |
-| **Cost** | Vertex AI compute only | Vertex AI compute + LangSmith (optional) |
+| **Lines of code (this design)** | ~180 (executor + agents + tools) | ~200 (graph + nodes + state) |
+| **Time to prototype** | Faster — less boilerplate, native Vertex AI | Slower — graph design upfront |
+| **Monitoring** | Cloud Logging (native) | LangSmith SaaS or self-hosted |
+| **Scaling** | Vertex AI handles scaling | Must manage LangGraph server |
+| **Cost** | Vertex AI compute only | Vertex AI + LangSmith (optional) |
+| **Dependency footprint** | `google-adk` + GCP SDKs | `langgraph` + `langchain` + `langchain-google-vertexai` |
 
 ### 5.4 Recommendation
 
-**For this use case (secure Mythos harness), LangGraph is recommended.**
+**For this use case, Google ADK with Custom ToolExecutor is recommended.**
 
 The decisive factors:
 
-1. **Gateway as a graph node** — The Agent Gateway is the most security-critical
-   component. Making it a visible, auditable node (not hidden inside functions) means
-   every tool call passes through a single checkpoint that shows up in traces, logs,
-   and visualizations. This aligns with our defense-in-depth principle from SandboxBench.
+1. **All-Google ecosystem** — Mythos runs on Vertex AI. The harness runs on GCE.
+   IAM, Cloud Logging, VPC-SC are all Google. ADK is the native fit — no adapter
+   layers, no third-party dependencies for core functionality.
 
-2. **`interrupt_before`** — The ability to pause execution before the gateway node
-   and let the researcher review high-risk tool calls is directly relevant. Mythos
-   is finding zero-days — a researcher may want to review before a PoC exploit runs.
+2. **`SecureToolExecutor` closes the visibility gap** — The original concern with
+   ADK was that gateway logic was hidden inside tool functions. With a Custom
+   ToolExecutor, all tool calls route through a single `execute()` method. This
+   gives the same single-checkpoint auditability as LangGraph's gateway node.
 
-3. **Checkpoint and replay** — If a session crashes mid-analysis, LangGraph can
-   resume from the last checkpoint. For multi-hour vulnerability assessments,
-   this prevents losing work.
+3. **Simpler dependency chain** — ADK + GCP SDKs vs. LangGraph + LangChain +
+   langchain-google-vertexai adapter. Fewer dependencies = smaller attack surface
+   for the harness itself.
 
-4. **State visibility** — The `HarnessState` TypedDict makes the security-relevant
-   state (delegation count, findings, pending tool calls) explicit and inspectable.
-   This is easier to audit than ADK's opaque internal state.
+4. **Native Vertex AI integration** — No adapter layer between the harness and the
+   model. ADK handles Vertex AI auth, retries, and streaming natively.
 
-**When to choose ADK instead:**
-- If you're already deep in the Google ecosystem and want tightest Vertex AI integration
-- If you want the simplest possible prototype (fewer lines, less boilerplate)
-- If Google ADK matures to include built-in gateway/checkpoint features
+**When to choose LangGraph instead:**
+- If you need built-in checkpointing to persistent storage (ADK requires manual implementation)
+- If you want LangSmith's trace replay for forensic analysis
+- If you're building a multi-provider setup (not all-Google)
 
 ## 6. Shared Components
 

@@ -58,7 +58,7 @@ KVM). gVisor intercepts syscalls in userspace but still shares the host kernel â
 model that finds kernel zero-days needs hardware isolation. Enterprise controls
 (Rings 2-8) are identical across all compute options.
 
-### Multi-Agent Harness with LangGraph (Recommended)
+### Multi-Agent Harness with Google ADK (Recommended)
 
 The harness uses a multi-agent architecture where **Claude Opus** orchestrates and
 **Claude Mythos** executes vulnerability research. Both run on Vertex AI.
@@ -68,12 +68,13 @@ The harness uses a multi-agent architecture where **Claude Opus** orchestrates a
 | **Opus** (Orchestrator) | Plans investigation, delegates tasks, reviews findings, writes reports | GCS, BigQuery, delegate-to-Mythos. No sandbox access |
 | **Mythos** (Worker) | Reads code, runs commands, builds exploits | Sandbox only. All tools execute via `docker exec` through Agent Gateway |
 
-**LangGraph over ADK** because the Agent Gateway is a first-class graph node (visible
-and auditable), `interrupt_before` enables human review of high-risk tool calls, and
-full checkpointing allows resuming multi-hour assessments after crashes.
+**ADK with Custom ToolExecutor** â€” the `SecureToolExecutor` intercepts all Mythos
+tool calls through a single `execute()` method (gateway validation, sandbox execution,
+output scanning). Native Vertex AI integration, all-Google ecosystem, minimal
+dependency chain. LangGraph available as alternative for built-in checkpointing.
 
-See [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) for full comparison, code examples for
-both ADK and LangGraph, and the security analysis behind this recommendation.
+See [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) for full comparison, code
+examples for both ADK and LangGraph, and the security analysis.
 
 ## SandboxBench Findings
 
