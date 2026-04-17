@@ -2,13 +2,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import google.auth
 import yaml
-
-_, project_id = google.auth.default()
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id or "")
-os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "us-central1")
-os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
 
 SANDBOX_RUNTIME = os.environ.get("MYTHOS_SANDBOX_RUNTIME", "kata-fc")
 SANDBOX_MEMORY = os.environ.get("MYTHOS_SANDBOX_MEMORY", "8g")
