@@ -16,7 +16,8 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | [Option A: Cloud Run](options/cloud-run.md) | gVisor always on, zero idle cost, 24h max runtime |
 | [Option B: GCE + Docker](options/gce-docker.md) | **Recommended.** COS + gVisor, full flexibility, ~$80/mo |
 | [Option C: GKE](options/gke.md) | Most defense-in-depth, scales to teams, highest complexity |
-| [HARNESS.md](HARNESS.md) | Secure agentic harness design: Agent Gateway, tool definitions, session management, validation with SandboxBench |
+| [HARNESS.md](HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
+| [HARNESS-DESIGN.md](HARNESS-DESIGN.md) | Multi-agent harness architecture: Opus orchestrator + Mythos worker, ADK vs LangGraph implementations, framework comparison |
 | [SandboxBench Paper](Prashant_Kulkarni_SadboxBench.pdf) | Research: "SandboxBench: A Comprehensive Evaluation Framework for AI Agent Containment" (Kulkarni et al., SPAR Fall 2025) |
 
 ## Security Architecture
@@ -54,6 +55,23 @@ receives code as a read-only volume mount. No git CLI, SSH keys, or PATs in the 
 Simplest mental model (one VM, one container, one proxy), full flexibility, strong
 isolation with COS + gVisor, and ~$80/mo cost. Enterprise controls (Rings 2-8) are
 identical across all compute options — the choice only affects Ring 0-1.
+
+### Multi-Agent Harness with LangGraph (Recommended)
+
+The harness uses a multi-agent architecture where **Claude Opus** orchestrates and
+**Claude Mythos** executes vulnerability research. Both run on Vertex AI.
+
+| Agent | Role | Tool Access |
+|---|---|---|
+| **Opus** (Orchestrator) | Plans investigation, delegates tasks, reviews findings, writes reports | GCS, BigQuery, delegate-to-Mythos. No sandbox access |
+| **Mythos** (Worker) | Reads code, runs commands, builds exploits | Sandbox only. All tools execute via `docker exec` through Agent Gateway |
+
+**LangGraph over ADK** because the Agent Gateway is a first-class graph node (visible
+and auditable), `interrupt_before` enables human review of high-risk tool calls, and
+full checkpointing allows resuming multi-hour assessments after crashes.
+
+See [HARNESS-DESIGN.md](HARNESS-DESIGN.md) for full comparison, code examples for
+both ADK and LangGraph, and the security analysis behind this recommendation.
 
 ## SandboxBench Findings
 
