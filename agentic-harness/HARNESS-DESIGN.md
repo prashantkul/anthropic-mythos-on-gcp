@@ -743,36 +743,36 @@ graph TB
 
 ### 5.1 Architecture Comparison
 
-| Dimension | Google ADK + ToolExecutor | LangGraph |
+| Dimension | Google ADK + BasePlugin | LangGraph |
 |---|---|---|
 | **Agent loop** | ADK manages internally | Graph nodes and edges |
 | **Multi-agent** | Sub-agent via function call inside tool | Explicit subgraph with delegation and return nodes |
-| **Gateway placement** | `SecureToolExecutor` — single class, all tools route through it | Gateway graph node — single node, all tools route through it |
-| **Security visibility** | High — one `execute()` method, auditable and testable | High — visible node in graph visualization and traces |
-| **Human-in-the-loop** | `before_tool_call` callback | `interrupt_before` on any node |
-| **State management** | ADK-managed | Explicit `TypedDict`, inspectable at every node |
+| **Gateway placement** | `SecurityGatewayPlugin` — BasePlugin with `before_tool_callback`, intercepts all tools globally | Gateway graph node — single node, all tools route through it |
+| **Security visibility** | High — single plugin, all tools pass through `before_tool_callback` | High — visible node in graph visualization and traces |
+| **Human-in-the-loop** | `before_tool_callback` can call `tool_context.request_confirmation()` | `interrupt_before` on any node |
+| **State management** | ADK-managed sessions + plugin instance state | Explicit `TypedDict`, inspectable at every node |
 | **Checkpointing** | Session-ID resume (must implement) | Built-in: persist to DB, resume from any node |
 | **Debugging** | ADK traces + Cloud Logging | LangSmith: replay any node, inspect state diffs |
 | **Vertex AI integration** | Native — tightest coupling, no adapter | Via `langchain-google-vertexai` adapter |
 | **Ecosystem** | All-Google: Vertex AI, Cloud Logging, IAM | LangChain: multi-provider, additional dependency |
-| **Complexity** | Lower — function calls feel natural | Higher — graph DSL, state schema, routing functions |
+| **Complexity** | Lower — callbacks feel natural, no graph DSL | Higher — graph DSL, state schema, routing functions |
 
 ### 5.2 Security Comparison
 
-| Security Property | Google ADK + ToolExecutor | LangGraph |
+| Security Property | Google ADK + BasePlugin | LangGraph |
 |---|---|---|
-| **Gateway as auditable checkpoint** | Yes — `SecureToolExecutor.execute()` is a single entry point | Yes — single graph node |
-| **Can pause before dangerous tools** | `before_tool_call` callback with approval logic | `interrupt_before=["gateway"]` |
-| **Replay for forensics** | Must implement transcript logging (straightforward with Cloud Logging) | Built-in checkpoint + replay |
-| **Tool call visibility in traces** | All calls logged in `execute()` | Full graph execution trace with state at each step |
-| **Credential separation** | Enforced in ToolExecutor — tools are schemas only, no credentials | Enforced in node design |
-| **Rate limiting** | Tracked in ToolExecutor state | Tracked in graph state |
+| **Gateway as auditable checkpoint** | Yes — `before_tool_callback` is a single entry point for all tools | Yes — single graph node |
+| **Agent-scoped enforcement** | `tool_context.agent_name` distinguishes Mythos vs Opus tools | Separate nodes per agent |
+| **Can pause before dangerous tools** | `tool_context.request_confirmation()` for human approval | `interrupt_before=["gateway"]` |
+| **Replay for forensics** | Must implement transcript logging | Built-in checkpoint + replay |
+| **Credential separation** | Plugin scopes rules by agent name — Opus tools skip sandbox checks | Enforced in node design |
+| **Rate limiting** | Tracked in plugin instance state | Tracked in graph state |
 
 ### 5.3 Operational Comparison
 
-| Dimension | Google ADK + ToolExecutor | LangGraph |
+| Dimension | Google ADK + BasePlugin | LangGraph |
 |---|---|---|
-| **Lines of code (this design)** | ~180 (executor + agents + tools) | ~200 (graph + nodes + state) |
+| **Lines of code** | ~180 (plugin + agents + tools) | ~200 (graph + nodes + state) |
 | **Time to prototype** | Faster — less boilerplate, native Vertex AI | Slower — graph design upfront |
 | **Monitoring** | Cloud Logging (native) | LangSmith SaaS or self-hosted |
 | **Scaling** | Vertex AI handles scaling | Must manage LangGraph server |
@@ -781,7 +781,7 @@ graph TB
 
 ### 5.4 Recommendation
 
-**For this use case, Google ADK with Custom ToolExecutor is recommended.**
+**For this use case, Google ADK with SecurityGatewayPlugin (BasePlugin) is recommended.**
 
 The decisive factors:
 
@@ -789,20 +789,24 @@ The decisive factors:
    IAM, Cloud Logging, VPC-SC are all Google. ADK is the native fit — no adapter
    layers, no third-party dependencies for core functionality.
 
-2. **`SecureToolExecutor` closes the visibility gap** — The original concern with
-   ADK was that gateway logic was hidden inside tool functions. With a Custom
-   ToolExecutor, all tool calls route through a single `execute()` method. This
-   gives the same single-checkpoint auditability as LangGraph's gateway node.
+2. **BasePlugin closes the visibility gap** — The original concern with ADK was
+   that gateway logic was hidden inside tool functions. With a `BasePlugin`,
+   all tool calls route through a single `before_tool_callback`. This gives the
+   same single-checkpoint auditability as LangGraph's gateway node, using ADK's
+   actual extension API.
 
 3. **Simpler dependency chain** — ADK + GCP SDKs vs. LangGraph + LangChain +
-   langchain-google-vertexai adapter. Fewer dependencies = smaller attack surface
-   for the harness itself.
+   langchain-google-vertexai adapter. Fewer dependencies = smaller attack surface.
 
 4. **Native Vertex AI integration** — No adapter layer between the harness and the
    model. ADK handles Vertex AI auth, retries, and streaming natively.
 
+5. **Future MCP path** — If tools later become MCP servers (multi-harness, remote
+   agents), [Agent Gateway](https://agentgateway.dev/) can be added as an
+   infrastructure-level proxy without changing the ADK harness code.
+
 **When to choose LangGraph instead:**
-- If you need built-in checkpointing to persistent storage (ADK requires manual implementation)
+- If you need built-in checkpointing to persistent storage
 - If you want LangSmith's trace replay for forensic analysis
 - If you're building a multi-provider setup (not all-Google)
 
@@ -810,36 +814,88 @@ The decisive factors:
 
 Regardless of framework, the following components are identical:
 
-### 6.1 Agent Gateway ([agentgateway.dev](https://agentgateway.dev/))
+### 6.1 SecurityGatewayPlugin (ADK BasePlugin)
 
-[Agent Gateway](https://github.com/agentgateway/agentgateway) is an open-source
-MCP/A2A proxy (Linux Foundation) that replaces custom gateway code with
-infrastructure-level policy enforcement. It sits between ADK agents and sandbox
-tool servers, enforcing security at the proxy layer.
+The security gateway is an ADK `BasePlugin` registered on the Runner. It
+intercepts all tool calls in-process via `before_tool_callback` and
+`after_tool_callback`. Since Mythos's tools are local Python functions
+(not MCP servers), this is the correct interception point.
 
 ```mermaid
 graph LR
-    ADK[ADK Harness] -->|MCP| AGW[Agent Gateway]
-    AGW -->|CEL policy check| TOOLS[Tool Servers\nin Sandbox]
-    AGW --> OTEL[OpenTelemetry]
+    M[Mythos] -->|tool call| P[SecurityGatewayPlugin]
+    P -->|approved| T[tool.run_async]
+    P -->|denied| D[Return denial]
+    T --> P2[after_tool_callback]
+    P2 --> M
 
-    style AGW fill:#6bcb77,stroke:#333
-    style TOOLS fill:#ff6b6b,stroke:#333,color:#fff
+    style P fill:#6bcb77,stroke:#333
+    style T fill:#ff6b6b,stroke:#333,color:#fff
+    style D fill:#e74c3c,stroke:#333,color:#fff
 ```
 
-| Custom Code (previous design) | Agent Gateway Equivalent |
-|---|---|
-| Command blocklist in Python | **CEL-based policies** in YAML config |
-| Argument regex denylist | **CEL expressions** on tool call arguments |
-| Rate limiting in ToolExecutor | **Built-in rate limiting** policies |
-| Custom audit logging to BQ | **OpenTelemetry** — Cloud Trace + Monitoring |
-| JWT/API key auth | **Built-in auth** — JWT, API keys, OAuth |
+```python
+from google.adk.plugins import BasePlugin
 
-**Deployment**: On GCE, runs as a container alongside the harness. On GKE,
-deploys as a pod with Kubernetes Gateway API and MCP service discovery.
+class SecurityGatewayPlugin(BasePlugin):
+    def __init__(self, sandbox, logger):
+        super().__init__(name="security_gateway")
+        self.sandbox = sandbox
+        self.logger = logger
+        self.call_count = 0
 
-The `SecureToolExecutor` in the ADK code (Section 4.1) remains as a
-**defense-in-depth fallback** — two independent checkpoints for tool calls.
+    async def before_tool_callback(self, *, tool, tool_args, tool_context):
+        # Only enforce on Mythos, not Opus
+        if tool_context.agent_name != "mythos_worker":
+            return None
+
+        self.call_count += 1
+
+        # Rate limit
+        if self.call_count > MAX_CALLS:
+            return {"error": "Rate limit exceeded"}
+
+        # Command blocklist
+        if tool.name == "run_command":
+            cmd = tool_args.get("command", "")
+            if cmd.split()[0] in COMMAND_DENYLIST:
+                return {"error": f"Blocked: {cmd.split()[0]}"}
+            for pattern in ARG_DENYLIST:
+                if re.search(pattern, cmd):
+                    return {"error": "Blocked pattern"}
+
+        # Path restriction
+        if tool.name in ("read_file", "analyze_binary"):
+            path = tool_args.get("path", "")
+            if not path.startswith(("/target/", "/tmp/")):
+                return {"error": f"Path denied: {path}"}
+
+        return None  # approved — proceed to tool.run_async()
+
+    async def after_tool_callback(self, *, tool, tool_args, tool_context, result):
+        if tool_context.agent_name != "mythos_worker":
+            return None
+        # Scan and redact credentials in output
+        output = str(result)
+        cleaned = re.sub(r'AKIA[0-9A-Z]{16}', '[REDACTED]', output)
+        if len(cleaned) > 102400:
+            cleaned = cleaned[:102400] + "\n...[truncated]"
+        return {"result": cleaned} if cleaned != output else None
+```
+
+Registered on the Runner (not the agent) — applies globally:
+
+```python
+runner = InMemoryRunner(
+    agent=opus_agent,
+    plugins=[SecurityGatewayPlugin(sandbox, logger)]
+)
+```
+
+**Future: Agent Gateway for MCP scenarios**. If tools are later exposed as
+MCP servers (multi-harness, remote agents), [Agent Gateway](https://agentgateway.dev/)
+(Linux Foundation, open-source MCP/A2A proxy) provides infrastructure-level
+enforcement with CEL policies, RBAC, and OpenTelemetry.
 
 See [HARNESS.md](HARNESS.md) for additional component-level design details.
 

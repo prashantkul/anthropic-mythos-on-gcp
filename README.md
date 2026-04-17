@@ -32,7 +32,7 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | 3 | **VPC Firewall + NAT** | Metadata service access, lateral movement, inbound attacks |
 | 4 | **Cloud NGFW / Palo Alto** | Encrypted C2, exploit delivery, covert channels |
 | 5 | **VPC Service Controls** | Cross-project data theft, stolen credential abuse |
-| 6 | **[Agent Gateway](https://agentgateway.dev/)** | MCP/A2A proxy — CEL policies, RBAC, rate limiting, OpenTelemetry |
+| 6 | **SecurityGatewayPlugin** | ADK BasePlugin — command blocklist, path restriction, rate limiting, output scanning |
 | 7 | **On-Prem Proxy** | Policy violations missed by cloud controls, shadow IT |
 | 8 | **Monitoring & Audit** | Undetected breaches, compliance gaps |
 
@@ -68,10 +68,11 @@ The harness uses a multi-agent architecture where **Claude Opus** orchestrates a
 | **Opus** (Orchestrator) | Plans investigation, delegates tasks, reviews findings, writes reports | GCS, BigQuery, delegate-to-Mythos. No sandbox access |
 | **Mythos** (Worker) | Reads code, runs commands, builds exploits | Sandbox only. All tools execute via `docker exec` through Agent Gateway |
 
-**ADK with Custom ToolExecutor** — the `SecureToolExecutor` intercepts all Mythos
-tool calls through a single `execute()` method (gateway validation, sandbox execution,
-output scanning). Native Vertex AI integration, all-Google ecosystem, minimal
-dependency chain. LangGraph available as alternative for built-in checkpointing.
+**ADK with SecurityGatewayPlugin** — an ADK `BasePlugin` intercepts all Mythos
+tool calls through `before_tool_callback` (validation, blocklists, rate limiting)
+and `after_tool_callback` (output scanning, credential redaction). Native Vertex AI
+integration, all-Google ecosystem. [Agent Gateway](https://agentgateway.dev/)
+available for future MCP scenarios. LangGraph as alternative for built-in checkpointing.
 
 See [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) for full comparison, code
 examples for both ADK and LangGraph, and the security analysis.
