@@ -43,9 +43,9 @@ graph LR
 
 - Private GKE cluster with no public endpoint
 - Dedicated namespace `mythos-sandbox` with **PodSecurityStandard: restricted** enforced
-- Three pods: agent (gVisor sandbox), egress proxy (Squid), orchestrator (Workload Identity)
+- Three pods: agent (Kata micro-VM or gVisor sandbox), egress proxy (Squid), orchestrator (Workload Identity)
 - **Cilium NetworkPolicy**: agent can only reach proxy on port 3128, nothing else
-- **GKE Sandbox**: node pool configured with `--sandbox type=gvisor`
+- **Kata Containers** (recommended): agent pod runs in micro-VM via RuntimeClass. Alternative: GKE Sandbox (gVisor)
 - **Workload Identity**: orchestrator pod mapped to GCP SA, agent pod has NO mapping
 
 ## Key Kubernetes Security Controls
@@ -56,7 +56,7 @@ graph LR
 | NetworkPolicy | Default deny all, allow agent->proxy:3128 only |
 | SA Token Automount | `automountServiceAccountToken: false` on agent pod |
 | Workload Identity | Orchestrator pod only, agent pod unbound |
-| GKE Sandbox | gVisor on agent node pool |
+| Runtime Isolation | Kata Containers via RuntimeClass (recommended) or GKE Sandbox (gVisor) |
 | Private Cluster | No public endpoint, authorized networks only |
 | Metadata Concealment | `--workload-metadata=GKE_METADATA` disables legacy endpoint |
 
@@ -76,11 +76,11 @@ graph LR
 
 ## Strengths
 
-- **Most defense-in-depth** — K8s namespace isolation + NetworkPolicy + PodSecurityStandard + gVisor
+- **Most defense-in-depth** — K8s namespace isolation + NetworkPolicy + PodSecurityStandard + Kata micro-VM
 - **Declarative security** — NetworkPolicy and PSS are version-controlled YAML
 - **Workload Identity** — cleanest credential separation (no key files, no metadata SA)
 - **Scales to teams** — multiple namespaces, RBAC per researcher, shared cluster
-- **GKE Sandbox** — Google-managed gVisor integration, no manual `runsc` setup
+- **Kata Containers** — OCI-compatible micro-VM, drop-in via RuntimeClass. Fallback: GKE Sandbox (gVisor)
 
 ## Limitations
 
@@ -92,7 +92,7 @@ graph LR
 
 ## SandboxBench Applicability
 
-With GKE Sandbox + NetworkPolicy + PSS restricted: **0/8 Docker escape + 0/6 K8s challenges apply** (when correctly configured).
+With Kata Containers + NetworkPolicy + PSS restricted: **0/8 Docker escape + 0/6 K8s challenges apply** (when correctly configured). Kata micro-VMs give each pod its own kernel, so container escape vectors only affect the guest.
 
 Without hardening: 6/8 Docker + 6/6 K8s challenges apply. The K8s challenges
 (RBAC abuse, SA token theft, configmap secrets, metadata service, privileged pod,

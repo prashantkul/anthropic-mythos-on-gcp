@@ -728,7 +728,7 @@ The gateway validates all Mythos tool calls:
 
 See [HARNESS.md Section 3.3](HARNESS.md) for full design.
 
-- Creates hardened containers with gVisor runtime
+- Creates hardened sandbox micro-VMs (Firecracker) or containers (Kata/gVisor)
 - Executes tool calls via `docker exec` (never `shell=True`)
 - Enforces timeouts and output size limits
 - Destroys containers after session ends

@@ -14,7 +14,7 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 |----------|-------------|
 | [APPROACH.md](APPROACH.md) | Architecture overview: threat model, 9-ring defense-in-depth, comparison table, VPC-SC, Cloud NGFW, source code ingestion, implementation plan |
 | [Option A: Cloud Run](options/cloud-run.md) | gVisor always on, zero idle cost, 24h max runtime |
-| [Option B: GCE + Docker](options/gce-docker.md) | **Recommended.** COS + gVisor, full flexibility, ~$80/mo |
+| [Option B: GCE + Firecracker](options/gce-docker.md) | **Recommended.** Firecracker micro-VM, hardware isolation, full flexibility |
 | [Option C: GKE](options/gke.md) | Most defense-in-depth, scales to teams, highest complexity |
 | [HARNESS.md](agentic-harness/HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
 | [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) | Multi-agent harness architecture: Opus orchestrator + Mythos worker, ADK vs LangGraph implementations, framework comparison |
@@ -27,7 +27,7 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | Ring | Control | What It Stops |
 |------|---------|---------------|
 | 0 | **Container Hardening** | Privilege escalation, filesystem persistence, capability abuse |
-| 1 | **gVisor Runtime** | Kernel-level escapes, syscall exploitation |
+| 1 | **Micro-VM / gVisor** | Kernel-level escapes — Firecracker/Kata micro-VM (GCE/GKE), gVisor (Cloud Run) |
 | 2 | **Egress Proxy (Squid)** | Data exfiltration, direct Anthropic API access, DNS tunneling |
 | 3 | **VPC Firewall + NAT** | Metadata service access, lateral movement, inbound attacks |
 | 4 | **Cloud NGFW / Palo Alto** | Encrypted C2, exploit delivery, covert channels |
@@ -52,9 +52,11 @@ receives code as a read-only volume mount. No git CLI, SSH keys, or PATs in the 
 
 ### GCE + Docker Recommended (for now)
 
-Simplest mental model (one VM, one container, one proxy), full flexibility, strong
-isolation with COS + gVisor, and ~$80/mo cost. Enterprise controls (Rings 2-8) are
-identical across all compute options — the choice only affects Ring 0-1.
+Simplest mental model (one VM, one micro-VM sandbox, one proxy), full flexibility,
+strongest self-managed isolation with Firecracker micro-VMs (hardware-enforced via
+KVM). gVisor intercepts syscalls in userspace but still shares the host kernel — a
+model that finds kernel zero-days needs hardware isolation. Enterprise controls
+(Rings 2-8) are identical across all compute options.
 
 ### Multi-Agent Harness with LangGraph (Recommended)
 

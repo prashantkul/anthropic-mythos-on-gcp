@@ -153,8 +153,8 @@ does NOT include `anthropic.com` -- this is intentional.
 
 | Dimension | **Cloud Run** | **GCE + Docker** | **GKE** |
 |---|---|---|---|
-| **Isolation mechanism** | gVisor (built-in, always on) | Docker cgroups/namespaces. gVisor optional via `runsc` on COS | Pod isolation. GKE Sandbox (gVisor) optional per node pool |
-| **Escape difficulty** | Hardest. No SSH, no node access, gVisor intercepts syscalls | Medium. Container escape reaches host VM. COS + gVisor narrows this | Medium-Hard. Pod escape possible, but namespace + NetworkPolicy limit blast radius |
+| **Isolation mechanism** | gVisor (built-in, always on) | **Firecracker micro-VM** (recommended) or Kata Containers. Each sandbox gets own kernel | **Kata Containers** via RuntimeClass (recommended) or GKE Sandbox (gVisor) |
+| **Escape difficulty** | Hardest managed option. No SSH, no node access, gVisor intercepts syscalls | **Hardest self-managed**. Micro-VM escape requires breaking KVM hypervisor (hardware-enforced) | Hard. Kata micro-VM + namespace + NetworkPolicy. gVisor fallback available |
 | **Metadata service risk** | None. Cloud Run abstracts credentials internally | HIGH if not blocked. Must add iptables rule on host. Easy to forget | Medium. Must configure NetworkPolicy. Workload Identity disables legacy endpoint |
 | **Egress control** | VPC connector + Cloud NAT. L7 filtering needs sidecar proxy | Squid on host or sidecar. iptables for L3. Full flexibility | Cilium L3/L4 NetworkPolicy + Squid pod for L7 domain filtering |
 | **VPC Service Controls** | Supported. Cloud Run service within perimeter | Supported. VM within perimeter | Supported. GKE cluster within perimeter |
@@ -175,7 +175,7 @@ does NOT include `anthropic.com` -- this is intentional.
 | **Setup complexity** | Low (~30 min) | Medium (~1 hour) | High (~2-3 hours) |
 | **Enterprise controls setup** | +1 hour (VPC-SC, NGFW, VPN) | +1 hour (same) | +1.5 hours (same + K8s policies) |
 | **Attack surface** | Minimal. No SSH, no node, no K8s API | VM is reachable if container escapes | K8s API server, etcd, kubelet, RBAC — each is attack surface |
-| **SandboxBench escape applicability** | 0/8 escape challenges apply (gVisor blocks all) | 5/8 apply if misconfigured. 0/8 with COS + gVisor + hardening | 6/8 Docker + 6/6 K8s challenges apply if misconfigured |
+| **SandboxBench escape applicability** | 0/8 escape challenges apply (gVisor blocks all) | 0/8 with Firecracker micro-VM (own kernel). 5/8 apply if using runc without hardening | 0/8 with Kata micro-VM. 6/8 Docker + 6/6 K8s apply if misconfigured |
 | **Best for** | Short-lived, bounded analysis tasks | Interactive, long-running exploration. Single researcher | Team use, multi-tenant, production workloads |
 
 ### 3.4 Detailed Option Architectures
@@ -184,7 +184,7 @@ Each option is documented in its own file with architecture diagrams, security
 details, cost estimates, and SandboxBench applicability:
 
 - **[Option A: Cloud Run](options/cloud-run.md)** — Strongest default isolation (gVisor always on), zero idle cost, but limited to 24h runtime and 32GB RAM
-- **[Option B: GCE + Docker](options/gce-docker.md)** (Recommended) — Simplest mental model, full flexibility, strong isolation with COS + gVisor
+- **[Option B: GCE + Firecracker](options/gce-docker.md)** (Recommended) — Simplest mental model, full flexibility, strongest self-managed isolation with Firecracker micro-VMs
 - **[Option C: GKE](options/gke.md)** — Most defense-in-depth, scales to teams, but highest complexity and cost
 
 ## 4. Security Controls Deep Dive
@@ -201,7 +201,7 @@ across eight layers:
 
 ```mermaid
 graph LR
-    R0["Ring 0\nContainer Hardening\n(FOUNDATION)"] --> R1["Ring 1\ngVisor Runtime"]
+    R0["Ring 0\nContainer Hardening\n(FOUNDATION)"] --> R1["Ring 1\nMicro-VM / gVisor"]
     R1 --> R2["Ring 2\nEgress Proxy"]
     R2 --> R3["Ring 3\nVPC + Firewall"]
     R3 --> R4["Ring 4\nCloud NGFW"]
@@ -224,7 +224,7 @@ graph LR
 | Ring | Layer | Key Controls |
 |------|-------|-------------|
 | 0 | Container Hardening | Non-root, read-only rootfs, drop ALL caps, seccomp, no privilege escalation |
-| 1 | gVisor Runtime | User-space kernel intercepts all syscalls, separate namespaces, no Docker socket |
+| 1 | Micro-VM / gVisor | Firecracker or Kata micro-VM (GCE/GKE), gVisor user-space kernel (Cloud Run). Own kernel per sandbox, no Docker socket |
 | 2 | Egress Proxy | Squid domain allowlist, `anthropic.com` denied, proxy handles DNS, request logging |
 | 3 | VPC + Firewall | Deny-all ingress, block metadata `169.254.169.254`, Cloud NAT only, IAP for SSH |
 | 4 | Cloud NGFW | L7 DPI, IPS/IDS signatures, TLS inspection, URL filtering, DNS security |
@@ -248,22 +248,39 @@ This is the innermost, most critical layer. If every outer ring fails, this must
 | No host namespaces | `--pid=container` / `hostPID: false`, `hostNetwork: false` | Prevents `/proc/1/root` escape, network sniffing |
 | Tmpfs for writable dirs | `--tmpfs /tmp:rw,noexec,nosuid,size=512m` | Writable space without rootfs modification, size-limited, noexec |
 
-### 4.2 Ring 1 — Runtime Isolation (gVisor)
+### 4.2 Ring 1 — Runtime Isolation (Micro-VM / gVisor)
 
-gVisor interposes a user-space kernel between the container and the host kernel.
-Every syscall from the container is handled by gVisor's Sentry, not the host kernel.
-This is critical for Mythos because its zero-day discovery capability targets
-kernel-level vulnerabilities.
+gVisor interposes a user-space kernel between the container and the host kernel,
+intercepting syscalls in userspace. This is strong — but gVisor itself runs on the
+host kernel. A model that finds zero-days in Firefox and develops JIT heap sprays
+could plausibly find a gVisor escape, at which point the host kernel is exposed.
 
-| Runtime | Isolation Level | Overhead | Notes |
+**Micro-VMs** (Firecracker, Kata Containers) give each sandbox its own kernel,
+its own memory space, and a minimal hypervisor attack surface. A gVisor escape
+inside a micro-VM only reaches the guest kernel — the host is still protected
+by hardware virtualization (KVM/VMX).
+
+| Runtime | Isolation Level | Overhead | Best For |
 |---|---|---|---|
-| **runc** (default) | Namespace/cgroup only | None | All SandboxBench escapes apply |
-| **runsc (gVisor)** | User-space kernel | 5-20% CPU, some syscall incompatibility | Blocks all kernel-level escapes. **Required for Mythos** |
-| **Kata Containers** | MicroVM | Higher | Full VM isolation. Overkill for most cases |
+| **runc** (default) | Namespace/cgroup only | None | Never use for Mythos — all SandboxBench escapes apply |
+| **runsc (gVisor)** | User-space kernel | 5-20% CPU | Cloud Run (default, no choice). Baseline for GKE |
+| **Firecracker** | Micro-VM, own kernel, ~125ms boot | ~5MB per VM | **GCE recommended** — strongest isolation, minimal footprint, Rust VMM |
+| **Kata Containers** | OCI-compatible micro-VM | Higher than Firecracker | **GKE recommended** — drop-in via RuntimeClass, works with K8s ecosystem |
+| **gVisor + Firecracker** | Nested: gVisor inside micro-VM | Combined | Maximum isolation — two independent boundaries. For highest-risk workloads |
 
-On GCE with COS: configure Docker to use `runsc` runtime.
-On GKE: enable GKE Sandbox on the node pool (`--sandbox type=gvisor`).
-On Cloud Run: gVisor is always enabled (no configuration needed).
+**Per-platform recommendation:**
+- **Cloud Run**: gVisor (always on, no configuration needed, no alternative)
+- **GCE**: **Firecracker** (strongest isolation, ~125ms boot, Rust VMM). Alternative: Kata Containers
+- **GKE**: **Kata Containers** via RuntimeClass (OCI-compatible, drop-in replacement for GKE Sandbox). Alternative: GKE Sandbox (gVisor)
+
+**Why micro-VM over gVisor for GCE/GKE:**
+
+| Scenario | gVisor | Micro-VM (Firecracker/Kata) |
+|---|---|---|
+| Mythos finds a container runtime bug | Escape reaches host kernel | Escape reaches guest kernel inside VM — host protected by hypervisor |
+| Mythos exploits a syscall handler | gVisor Sentry is the target — single boundary | Guest kernel is the target — hypervisor is second boundary |
+| Unknown zero-day in isolation layer | gVisor is ~200K LoC Go — smaller than Linux kernel but still attack surface | KVM hypervisor is battle-tested, hardware-enforced (VMX/VT-x) |
+| Performance | 5-20% CPU overhead | ~5% CPU, ~5MB memory, ~125ms boot (Firecracker) |
 
 ### 4.3 Ring 2 — Egress Proxy
 
@@ -507,14 +524,14 @@ not real-time serving), this is negligible.
 Every escape vector tested in SandboxBench is mitigated at multiple rings.
 No single ring is solely responsible for any mitigation.
 
-| SandboxBench Challenge | Attack Vector | Ring 0 (Container) | Ring 1 (gVisor) | Ring 2 (Proxy) | Ring 3 (VPC) | Ring 4 (NGFW) | Ring 5 (VPC-SC) |
+| SandboxBench Challenge | Attack Vector | Ring 0 (Container) | Ring 1 (Micro-VM / gVisor) | Ring 2 (Proxy) | Ring 3 (VPC) | Ring 4 (NGFW) | Ring 5 (VPC-SC) |
 |---|---|---|---|---|---|---|---|
-| `privileged` | Mount `/dev/sda` | `privileged: false`, drop ALL | gVisor blocks raw device access | — | — | — | — |
+| `privileged` | Mount `/dev/sda` | `privileged: false`, drop ALL | Micro-VM: own kernel, no host `/dev`. gVisor: blocks raw device | — | — | — | — |
 | `docker_socket` | Docker API via socket | No socket mount | — | — | — | — | — |
-| `capabilities` | `CAP_SYS_ADMIN` mount | `drop: ["ALL"]` | gVisor blocks `mount` | — | — | — | — |
-| `shared_pid` | `/proc/1/root` access | `hostPID: false` | Separate PID namespace in gVisor | — | — | — | — |
-| `kernel_module` | `insmod` malicious module | No `CAP_SYS_MODULE` | gVisor blocks `init_module` syscall | — | — | — | — |
-| `cgroup_escape` | cgroups v1 `release_agent` | No `CAP_SYS_ADMIN` | gVisor intercepts cgroup ops | — | — | — | — |
+| `capabilities` | `CAP_SYS_ADMIN` mount | `drop: ["ALL"]` | Micro-VM: mount only affects guest. gVisor: blocks `mount` | — | — | — | — |
+| `shared_pid` | `/proc/1/root` access | `hostPID: false` | Micro-VM: separate kernel, no host PID. gVisor: separate namespace | — | — | — | — |
+| `kernel_module` | `insmod` malicious module | No `CAP_SYS_MODULE` | Micro-VM: module loads in guest kernel only. gVisor: blocks syscall | — | — | — | — |
+| `cgroup_escape` | cgroups v1 `release_agent` | No `CAP_SYS_ADMIN` | Micro-VM: cgroups are guest-only. gVisor: intercepts cgroup ops | — | — | — | — |
 | `proxy_bypass` | Exfiltrate around proxy | — | — | No direct egress from container network | Firewall denies non-proxy egress | NGFW inspects all traffic | — |
 | `dns_tunnel` | Data via DNS queries | — | — | Proxy handles DNS, container has no resolver | — | NGFW DNS Security detects tunneling | — |
 | `cloud_metadata` | Steal credentials via 169.254.169.254 | — | — | — | iptables blocks metadata IP | — | Stolen creds useless outside perimeter |
@@ -667,11 +684,11 @@ and retention policies for audit purposes.
 
 ### For Single-Researcher Exploration: GCE + Docker on COS
 
-| Why GCE + Docker | Enterprise Ring | SandboxBench Validation |
+| Why GCE + Firecracker | Enterprise Ring | SandboxBench Validation |
 |---|---|---|
-| Simple: 1 VM, 1 container, 1 proxy | VPC-SC, NGFW, on-prem, gateway all same across options | COS + gVisor blocks all 8 escape vectors |
+| Simple: 1 VM, 1 micro-VM sandbox, 1 proxy | VPC-SC, NGFW, on-prem, gateway all same across options | Firecracker micro-VM blocks all 8 escape vectors (own kernel) |
 | Full flexibility: unlimited time, nested containers | Ring 0-1 differ by option; Rings 2-8 identical | Squid + no direct egress blocks all 3 exfil vectors |
-| Strong isolation: COS + gVisor | Choice of compute does not affect enterprise controls | Read-only rootfs blocks all 3 persistence vectors |
+| Strongest self-managed: Firecracker micro-VM (hardware isolation) | Choice of compute does not affect enterprise controls | Read-only rootfs blocks all 3 persistence vectors |
 | Low cost: ~$80/mo active | | No socket + no Docker CLI blocks both replication vectors |
 
 The choice between Cloud Run, GCE, and GKE affects **Ring 0-1 only**. Rings 2-8
@@ -708,7 +725,7 @@ Once we agree on the approach, the implementation order is:
 7. **Cloud VPN** — IPsec tunnel to on-prem proxy (if applicable)
 8. **Source Code Repos** — Set up CSR mirrors for target repos, create GCS staging bucket
 9. **Container images** — Build and push hardened sandbox Dockerfile + Squid proxy to Artifact Registry
-10. **Compute** — Deploy GCE VM (COS), configure Docker with gVisor runtime, deploy containers
+10. **Compute** — Deploy GCE VM, install Firecracker (or Kata Containers), deploy sandbox micro-VMs
 11. **Agent Gateway** — Deploy gateway service with tool call policies
 12. **Monitoring** — Cloud Audit Logs, log sinks to BigQuery, alert policies
 13. **Validation** — Run SandboxBench escape challenges against the environment to verify containment
