@@ -1,5 +1,5 @@
 [project]
-name = "mythos-harness"
+name = "mythos-harness-parallel"
 version = "0.1.0"
 description = "Secure multi-agent harness for Claude Mythos vulnerability research on GCP"
 requires-python = ">=3.12"

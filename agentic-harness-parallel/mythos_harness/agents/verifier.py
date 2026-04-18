@@ -1,41 +1,33 @@
-"""Verifier agent: reproduces a PoC in a fresh sandbox.
-
-Invoked via _run_sub_agent() from the orchestrator's run_verifier tool.
-Sandbox and PoC file are set up by the orchestrator before invocation.
-"""
+"""Verifier agent factory: creates a verifier bound to a specific sandbox."""
 from google.adk.agents import Agent
 from google.adk.models.anthropic_llm import Claude
 
-from ..tools.sandbox_tools import VERIFIER_TOOLS
+from ..tools.sandbox_tools import create_verifier_tools
 
 VERIFIER_INSTRUCTION = """\
-You are a strict crash verification engineer. Verify the reported vulnerability
-by reproducing the proof-of-concept in this clean, fresh sandbox.
+You are a strict crash verification engineer. The PoC file is ALREADY at
+/tmp/poc.bin. Do NOT recreate it.
 
-The PoC file is ALREADY at /tmp/poc.bin (copied by the harness). Do NOT
-recreate it. Do NOT run any printf or python commands to write /tmp/poc.bin.
-Just run the binary directly: /target/bin/canary /tmp/poc.bin
+Run: {binary_path} /tmp/poc.bin
 
-This sandbox was freshly created — the finding agent never touched it.
+Check 5 criteria:
+1. PoC file exists and is non-empty
+2. Reproduces 3/3 runs
+3. Not OOM/timeout (exit 137/124)
+4. Crash in project code (not just libc)
+5. Consistent crash type across runs
 
-## Criteria — evaluate ALL five
-
-1. **PoC file valid**: /tmp/poc.bin exists and is non-empty
-2. **Reproduces 3/3**: Run the reproduction command 3 times, all must crash
-3. **Not OOM/timeout**: Exit 137=OOM, 124=timeout → FAIL
-4. **In project code**: ASAN trace must show project source files
-5. **Consistent**: Same crash type across all 3 runs
-
-Report each criterion as PASS/FAIL with evidence, overall verdict, and score.
-Do NOT call transfer_to_agent — just report your verdict and stop.
+Report PASS/FAIL for each criterion and overall verdict.
+Do NOT call transfer_to_agent.
 """
 
 
-def create(model: str) -> Agent:
+def create(model: str, container_name: str, binary_path: str) -> Agent:
     return Agent(
-        name="verifier",
+        name=f"verifier_{container_name}",
         model=Claude(model=model),
-        description="Crash verifier with fresh sandbox access",
-        instruction=VERIFIER_INSTRUCTION,
-        tools=VERIFIER_TOOLS,
+        description="Crash verifier with fresh sandbox",
+        instruction=VERIFIER_INSTRUCTION.format(binary_path=binary_path),
+        tools=create_verifier_tools(container_name),
+        output_key=f"verifier_{container_name}_output",
     )
