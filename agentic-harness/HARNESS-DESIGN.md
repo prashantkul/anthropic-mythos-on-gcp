@@ -10,8 +10,8 @@ multi-agent system where:
 
 - **Claude Opus** (Orchestrator) plans investigations, delegates tasks, reviews findings, and produces reports
 - **Claude Mythos** (Worker) executes vulnerability research — reads code, runs commands, builds exploits
-- **Agent Gateway** validates and filters all tool calls before sandbox execution
-- **Sandbox Container** is the isolated execution environment where all code analysis happens
+- **SecurityGatewayPlugin** (ADK BasePlugin) validates and filters all tool calls before sandbox execution
+- **Sandbox Container** (Docker + gVisor, `--network=none`) is the isolated execution environment
 
 Both models run on **Vertex AI**. Neither has direct access to GCP credentials or
 the internet. The harness code mediates everything.
@@ -21,7 +21,7 @@ graph TB
     R[Researcher] -->|task| OPUS[Opus — Orchestrator]
 
     OPUS -->|delegate task| MYTHOS[Mythos — Worker]
-    MYTHOS -->|tool calls| GW[Agent Gateway]
+    MYTHOS -->|tool calls| GW[SecurityGatewayPlugin]
     GW -->|approved| SBX[Sandbox Container]
     SBX -->|output| GW
     GW -->|scanned output| MYTHOS
@@ -75,7 +75,7 @@ not through arbitrary command execution.
 
 Mythos is the specialized vulnerability researcher. ALL of its tools execute
 inside the sandbox container via `docker exec`. Every tool call passes through
-the Agent Gateway.
+the SecurityGatewayPlugin.
 
 | Tool | What It Does | Sandboxed? | Gateway Checks |
 |---|---|---|---|
@@ -128,7 +128,7 @@ sequenceDiagram
     participant R as Researcher
     participant O as Opus (Orchestrator)
     participant M as Mythos (Worker)
-    participant GW as Agent Gateway
+    participant GW as SecurityGatewayPlugin
     participant S as Sandbox
 
     R->>O: "Assess /target/ for security vulnerabilities"
@@ -283,228 +283,64 @@ verification.
 
 ## 4. Framework Implementations
 
-### 4.1 Google ADK with External Gateway (Recommended)
+### 4.1 Google ADK with Tool-Based Delegation (Implemented)
 
-ADK is extensible — you can inject a **Custom ToolExecutor** that intercepts
-all tool calls before execution. The gateway becomes a single external
-checkpoint, not scattered across tool functions.
-
-```python
-from google.adk import Agent, Tool, ToolExecutor, ToolContext
-from google.adk.runners import VertexAiRunner
-
-# ── External Gateway as Custom ToolExecutor ─────────────
-# All Mythos tool calls route through this single checkpoint.
-# ADK calls execute() for every tool — we validate, sandbox-execute,
-# scan output, and return.
-
-class SecureToolExecutor(ToolExecutor):
-    """External Agent Gateway. Intercepts all tool calls from Mythos."""
-
-    def __init__(self, gateway: AgentGateway, sandbox: SandboxManager,
-                 logger: AuditLogger):
-        self.gateway = gateway
-        self.sandbox = sandbox
-        self.logger = logger
-
-    def execute(self, tool: Tool, args: dict, context: ToolContext) -> str:
-        tool_name = tool.name
-
-        # 1. Gateway validates
-        approved, reason = self.gateway.validate(tool_name, args)
-        if not approved:
-            self.logger.log("denied", tool_name, args, reason)
-            return f"DENIED: {reason}"
-
-        # 2. Execute in sandbox (never on host)
-        if tool_name == "read_file":
-            result = self.sandbox.execute(["cat", args["path"]])
-        elif tool_name == "run_command":
-            result = self.sandbox.execute(
-                ["sh", "-c", args["command"]], timeout=180)
-        elif tool_name == "search_code":
-            result = self.sandbox.execute(
-                ["grep", "-rn", "--include", args.get("file_glob", "*"),
-                 args["pattern"], "/target/"])
-        elif tool_name == "compile":
-            result = self.sandbox.execute(
-                ["sh", "-c", args["build_command"]], timeout=300)
-        elif tool_name == "analyze_binary":
-            result = self.sandbox.execute([args["tool"], args["binary_path"]])
-        else:
-            return f"Unknown tool: {tool_name}"
-
-        # 3. Scan output before returning to model
-        output = result["stdout"]
-        if result.get("stderr"):
-            output += "\n" + result["stderr"]
-        clean = self.gateway.scan_output(output)
-
-        self.logger.log("approved", tool_name, args)
-        return clean
-
-# ── Mythos Tools (declarations only — execution is in the gateway) ──
-
-def read_file(path: str) -> str:
-    """Read a file from the target codebase."""
-    pass  # SecureToolExecutor handles execution
-
-def run_command(command: str) -> str:
-    """Run a shell command in the analysis sandbox."""
-    pass
-
-def search_code(pattern: str, file_glob: str = "*.c") -> str:
-    """Search for patterns in target codebase."""
-    pass
-
-def compile_code(build_command: str, working_dir: str = "/target") -> str:
-    """Compile target code in sandbox."""
-    pass
-
-def analyze_binary(binary_path: str, tool: str = "strings") -> str:
-    """Run static analysis on a binary in the sandbox."""
-    pass
-
-# ── Mythos Worker Agent (uses SecureToolExecutor) ───────
-
-gateway = AgentGateway()
-sandbox = SandboxManager()
-logger = AuditLogger()
-
-mythos_agent = Agent(
-    model="claude-mythos@latest",
-    name="mythos_worker",
-    tools=[
-        Tool(read_file),
-        Tool(run_command),
-        Tool(search_code),
-        Tool(compile_code),
-        Tool(analyze_binary),
-    ],
-    tool_executor=SecureToolExecutor(gateway, sandbox, logger),
-    system_prompt=(
-        "You are a vulnerability researcher. You have access to target "
-        "code mounted at /target/. Your job is to find security "
-        "vulnerabilities, write proof-of-concept exploits, and report "
-        "findings with severity ratings.\n\n"
-        "All your tool calls execute in an isolated sandbox. Some "
-        "commands may be denied by the security gateway — if so, "
-        "try alternative approaches.\n\n"
-        "When done, summarize your findings clearly with:\n"
-        "- Vulnerability description\n"
-        "- Affected file and line number\n"
-        "- Severity (CVSS if possible)\n"
-        "- Proof of concept\n"
-        "- Recommended fix"
-    ),
-)
-
-# ── Opus Tools (not sandboxed — direct Python SDK calls) ──
-
-def delegate_to_mythos(task: str, context: str = "") -> str:
-    """Delegate a vulnerability research task to the Mythos worker."""
-    prompt = f"{task}\n\nContext:\n{context}" if context else task
-    runner = VertexAiRunner(project="mythos-project")
-    result = runner.run(mythos_agent, prompt=prompt)
-    logger.log("delegation", "delegate_to_mythos", {"task": task})
-    return str(result)
-
-def store_report(title: str, content: str,
-                 severity: str = "medium") -> str:
-    """Store a vulnerability report to GCS."""
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    path = f"reports/{timestamp}_{severity}_{title}.md"
-    blob = gcs_bucket.blob(path)
-    blob.upload_from_string(content, content_type="text/markdown")
-    logger.log("store", "store_report", {"path": path, "severity": severity})
-    return f"Report stored at gs://{gcs_bucket.name}/{path}"
-
-def query_audit_log(query_description: str) -> str:
-    """Query the audit log for prior findings or session history."""
-    results = bq_client.query(
-        "SELECT timestamp, event, tool, decision "
-        "FROM `mythos_audit.session_log` "
-        "WHERE SEARCH(args, @query) "
-        "ORDER BY timestamp DESC LIMIT 20",
-        job_config=bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("query", "STRING",
-                                              query_description)
-            ]
-        ),
-    )
-    return json.dumps([dict(r) for r in results], indent=2, default=str)
-
-# ── Opus Orchestrator Agent ─────────────────────────────
-
-opus_agent = Agent(
-    model="claude-opus@latest",
-    name="opus_orchestrator",
-    tools=[
-        Tool(delegate_to_mythos),
-        Tool(store_report),
-        Tool(query_audit_log),
-    ],
-    system_prompt=(
-        "You are a senior security researcher orchestrating a "
-        "vulnerability assessment.\n\n"
-        "You have a specialized worker (Mythos) that can analyze code "
-        "in an isolated sandbox. You cannot access the sandbox directly "
-        "— all code analysis goes through Mythos via delegate_to_mythos.\n\n"
-        "Your workflow:\n"
-        "1. Plan what areas to investigate based on the target\n"
-        "2. Delegate specific, focused tasks to Mythos\n"
-        "3. Review findings critically — verify they make sense\n"
-        "4. Request follow-up investigation if findings are unclear\n"
-        "5. Produce a final consolidated report with store_report\n\n"
-        "Be strategic with delegations. Each delegation starts a full "
-        "analysis session, so give Mythos clear, focused tasks rather "
-        "than vague instructions."
-    ),
-)
-
-# ── Entry Point ─────────────────────────────────────────
-
-def run_assessment(target_code_path: str, task: str):
-    """Run a full security assessment."""
-    sandbox.create(target_code_path)
-    try:
-        runner = VertexAiRunner(project="mythos-project")
-        report = runner.run(opus_agent, prompt=task)
-        return report
-    finally:
-        sandbox.destroy()
-        logger.flush()
-```
-
-**Key design: `SecureToolExecutor`**
+ADK's `sub_agents` + `transfer_to_agent` is designed for Gemini and does not
+work with Claude on Vertex AI. We use the pattern from the
+[ai-security-agent](https://github.com/google/adk-samples/tree/main/python/agents/ai-security-agent)
+sample: sub-agents run inside **tool functions** via a fresh Runner in a
+ThreadPoolExecutor.
 
 ```mermaid
 graph LR
-    MYTHOS[Mythos Agent] -->|tool call| EXEC[SecureToolExecutor]
-    EXEC --> GW{Gateway\nValidate}
-    GW -->|approved| SBX[Sandbox\ndocker exec]
-    GW -->|denied| DENY[Return denial]
-    SBX --> SCAN[Scan Output]
-    SCAN --> MYTHOS
+    OPUS[Opus Orchestrator] -->|run_finder| TOOL1[Tool Function]
+    OPUS -->|run_verifier| TOOL2[Tool Function]
+    OPUS -->|run_analyst| TOOL3[Tool Function]
 
-    style EXEC fill:#6bcb77,stroke:#333
-    style GW fill:#f39c12,stroke:#333
-    style SBX fill:#ff6b6b,stroke:#333,color:#fff
+    TOOL1 -->|fresh Runner| FINDER[Finder Agent]
+    TOOL2 -->|fresh Runner| VERIFIER[Verifier Agent]
+    TOOL3 -->|fresh Runner| ANALYST[Analyst Agent]
+
+    style OPUS fill:#0ea5e9,stroke:#333,color:#fff
+    style FINDER fill:#22c55e,stroke:#333,color:#fff
+    style VERIFIER fill:#eab308,stroke:#333,color:#000
+    style ANALYST fill:#3b82f6,stroke:#333,color:#fff
 ```
 
-All Mythos tool calls pass through a single `SecureToolExecutor.execute()` method.
-The gateway is external to the tool definitions — tools are declarations only
-(schemas for the model), not implementations. This gives the same single-checkpoint
-visibility as LangGraph's gateway node, within the ADK ecosystem.
+Each tool function:
+1. Creates a sandbox container (`docker run --runtime=runsc --network=none`)
+2. Sets the container for the tool functions (`set_container()`)
+3. Creates a SecurityGatewayPlugin and fresh Runner
+4. Runs the sub-agent via `ThreadPoolExecutor` (async isolation)
+5. Extracts results (PoC bytes for finder, text for all)
+6. Destroys the sandbox
+7. Returns result text to Opus
 
-**ADK characteristics with external gateway:**
-- Gateway is a single class (`SecureToolExecutor`), not scattered across tool functions
-- All tool calls route through one `execute()` method — auditable, testable
-- Tool definitions are pure schemas — no security logic in tool functions
-- Native Vertex AI integration — no adapter layer
-- ADK manages conversation state, retries, and token limits
-- All-Google ecosystem: Vertex AI, Cloud Logging, IAM
+**SecurityGatewayPlugin** is registered on **every Runner** — both the
+orchestrator's and each sub-agent's. This ensures command blocklists, path
+restrictions, and output scanning apply to all sandboxed tool calls.
+
+```mermaid
+graph LR
+    CALL[Sub-agent tool call] --> GW[SecurityGatewayPlugin\nbefore_tool_callback]
+    GW -->|approved| EXEC[docker exec\nin sandbox]
+    GW -->|denied| DENY[Return denial]
+    EXEC --> SCAN[after_tool_callback\noutput scanning]
+    SCAN --> RESULT[Return to agent]
+
+    style GW fill:#dc2626,stroke:#333,color:#fff
+    style EXEC fill:#22c55e,stroke:#333,color:#fff
+    style DENY fill:#dc2626,stroke:#333,color:#fff
+```
+
+**Key learnings from implementation:**
+- `Agent` not `LlmAgent` — matches ADK samples convention
+- `Claude` model class from `google.adk.models.anthropic_llm` — wraps Anthropic Vertex SDK
+- Model IDs: `claude-opus-4-7`, `claude-sonnet-4-6` (not `publishers/anthropic/...`). Region: `global`
+- Sub-agent instructions must say "Do NOT call transfer_to_agent"
+- Opus instruction must say "Call ONE tool at a time" to prevent parallel execution
+- `run_analyst` auto-saves report — Opus consistently does not call `store_report` after large results
+- `docker cp` doesn't work with gVisor — use `docker exec -i sh -c 'cat > path'` for file writes
 
 ### 4.2 LangGraph
 
@@ -892,21 +728,32 @@ runner = InMemoryRunner(
 )
 ```
 
-**Future: Agent Gateway for MCP scenarios**. If tools are later exposed as
-MCP servers (multi-harness, remote agents), [Agent Gateway](https://agentgateway.dev/)
-(Linux Foundation, open-source MCP/A2A proxy) provides infrastructure-level
-enforcement with CEL policies, RBAC, and OpenTelemetry.
+### Agent Gateway — Future MCP Scenarios
+
+Our tools are local Python functions calling `docker exec`. The
+SecurityGatewayPlugin intercepts them in-process. No network proxy needed.
+
+If tools are later exposed as MCP servers (e.g., for multi-harness, remote
+agents, or shared tool infrastructure), two Agent Gateway products apply:
+
+| Product | What It Is | When to Use |
+|---|---|---|
+| **[Agent Gateway (agentgateway.dev)](https://agentgateway.dev/)** | Open-source MCP/A2A proxy (Linux Foundation). CEL policies, RBAC, rate limiting, OpenTelemetry. Written in Rust. | When tools are MCP servers and you need infrastructure-level policy enforcement between agents and tools |
+| **[Google Cloud Agent Gateway](https://cloud.google.com/iam/docs/roles-permissions/agentgateway)** | Google Cloud managed service for agent connectivity. DNS peering, IAM integration. | When deploying agents on GCP and need Google-managed agent networking |
+
+Neither applies to our current design (local tools, in-process plugin). The
+SecurityGatewayPlugin is the correct solution for tool-based delegation where
+sub-agents run inside tool functions via `_run_sub_agent`.
 
 See [HARNESS.md](HARNESS.md) for additional component-level design details.
 
 ### 6.2 Sandbox Manager
 
-See [HARNESS.md Section 3.3](HARNESS.md) for full design.
-
-- Creates hardened sandbox micro-VMs (Firecracker) or containers (Kata/gVisor)
+- Creates hardened sandbox containers (Docker + gVisor, `--network=none`)
 - Executes tool calls via `docker exec` (never `shell=True`)
+- Writes files via `docker exec -i sh -c 'cat > path'` (stdin pipe, not `docker cp`)
 - Enforces timeouts and output size limits
-- Destroys containers after session ends
+- Destroys containers after each sub-agent run — no state persists
 
 ### 6.3 Audit Logger
 
