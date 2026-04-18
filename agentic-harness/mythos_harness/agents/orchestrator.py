@@ -19,10 +19,14 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+import uuid
+
 from ..agents import analyst, finder, verifier
 from ..config import HarnessConfig, TargetConfig
 from ..sandbox import manager as sandbox
 from ..tools.sandbox_tools import set_container
+
+MAX_SUB_AGENT_RESULT = 3000
 
 
 @retry(
@@ -84,9 +88,13 @@ You are an orchestrator coordinating vulnerability research via specialist tools
 
 ## Rules
 
+- IMPORTANT: Call ONE tool at a time. Wait for the result before calling the next.
+  Do NOT call multiple tools in parallel.
 - Be specific with finder tasks — one focus area per call
-- If finder returns no crash, try a different area
-- Always verify before analyzing
+- If finder returns a crash, IMMEDIATELY call run_verifier before investigating
+  the next area
+- If verifier passes, IMMEDIATELY call run_analyst
+- After storing the report, move to the next focus area
 - Track what you've investigated to avoid redundancy
 """
 
@@ -104,7 +112,8 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
         Args:
             task: Focused research task (e.g., 'Find buffer overflows in input parsing').
         """
-        container_name = f"find_{target.name}"
+        run_id = uuid.uuid4().hex[:8]
+        container_name = f"find_{target.name}_{run_id}"
         print(f"\n  [harness] Creating finder sandbox: {container_name}")
         sandbox.create(
             target.image_tag,
@@ -130,6 +139,8 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             else:
                 print(f"  [harness] No PoC at /tmp/poc.bin")
 
+            if len(result) > MAX_SUB_AGENT_RESULT:
+                result = result[:MAX_SUB_AGENT_RESULT] + "\n...[truncated]"
             return result
         finally:
             sandbox.destroy(container_name)
@@ -146,7 +157,8 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
         if not poc_bytes:
             return "ERROR: No PoC bytes available. Run the finder first."
 
-        container_name = f"grade_{target.name}"
+        run_id = uuid.uuid4().hex[:8]
+        container_name = f"grade_{target.name}_{run_id}"
         print(f"\n  [harness] Creating verifier sandbox: {container_name}")
         sandbox.create(
             target.image_tag,
@@ -166,7 +178,10 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Expected crash type: {crash_type}\n"
             )
             print(f"  [harness] Running verifier agent...")
-            return _run_sub_agent(_verifier_agent, prompt)
+            result = _run_sub_agent(_verifier_agent, prompt)
+            if len(result) > MAX_SUB_AGENT_RESULT:
+                result = result[:MAX_SUB_AGENT_RESULT] + "\n...[truncated]"
+            return result
         finally:
             sandbox.destroy(container_name)
             print(f"  [harness] Verifier sandbox destroyed")
@@ -181,7 +196,8 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             reproduction_command: Command that reproduces the crash.
             verification: Verification verdict and evidence.
         """
-        container_name = f"analyze_{target.name}"
+        run_id = uuid.uuid4().hex[:8]
+        container_name = f"analyze_{target.name}_{run_id}"
         print(f"\n  [harness] Creating analyst sandbox: {container_name}")
         sandbox.create(
             target.image_tag,
@@ -201,7 +217,10 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Source code is at /target/ (read-only)."
             )
             print(f"  [harness] Running analyst agent...")
-            return _run_sub_agent(_analyst_agent, prompt)
+            result = _run_sub_agent(_analyst_agent, prompt)
+            if len(result) > MAX_SUB_AGENT_RESULT:
+                result = result[:MAX_SUB_AGENT_RESULT] + "\n...[truncated]"
+            return result
         finally:
             sandbox.destroy(container_name)
             print(f"  [harness] Analyst sandbox destroyed")
