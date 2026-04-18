@@ -124,15 +124,34 @@ async def run_parallel_assessment(
     )
     finder_results = await _run_workflow(parallel, prompt, plugins=[gateway])
 
-    # Extract PoC bytes from each finder container
+    # Extract PoC bytes from each finder container — check multiple paths
+    POC_PATHS = ["/tmp/poc.bin", "/tmp/poc", "/tmp/poc.dat", "/tmp/input.bin", "/tmp/crash.bin"]
     findings = []
     for i, fc in enumerate(finder_containers):
-        poc_bytes = sandbox.read_file(fc, "/tmp/poc.bin")
         agent_key = f"finder_{fc}"
         finder_output = finder_results.get(agent_key, "")
+        poc_bytes = None
+        poc_path = None
+
+        for path in POC_PATHS:
+            poc_bytes = sandbox.read_file(fc, path)
+            if poc_bytes:
+                poc_path = path
+                break
+
+        # Fallback: find any .bin file in /tmp
+        if not poc_bytes:
+            find_result = sandbox.execute(fc, ["find", "/tmp", "-name", "*.bin", "-type", "f"], timeout=5)
+            for line in find_result["stdout"].strip().split("\n"):
+                line = line.strip()
+                if line:
+                    poc_bytes = sandbox.read_file(fc, line)
+                    if poc_bytes:
+                        poc_path = line
+                        break
 
         if poc_bytes:
-            print(f"  {C_GREEN}[finder_{i}]{C_RESET} PoC: {C_BOLD}{len(poc_bytes)} bytes{C_RESET}")
+            print(f"  {C_GREEN}[finder_{i}]{C_RESET} PoC: {C_BOLD}{len(poc_bytes)} bytes{C_RESET} at {poc_path}")
             findings.append({
                 "index": i,
                 "focus_area": focus_areas[i],
@@ -140,7 +159,8 @@ async def run_parallel_assessment(
                 "finder_output": finder_output,
             })
         else:
-            print(f"  {C_YELLOW}[finder_{i}]{C_RESET} No PoC at /tmp/poc.bin")
+            preview = finder_output.strip()[:150] if finder_output else "no output"
+            print(f"  {C_YELLOW}[finder_{i}]{C_RESET} No PoC found | {C_DIM}{preview}{C_RESET}")
 
     # Destroy finder containers
     for fc in finder_containers:
