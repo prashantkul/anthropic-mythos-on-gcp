@@ -89,16 +89,17 @@ static int parse_data(Entry *e) {
 
     if (size == 0 || count == 0) return -1;
 
-    /* BUG: uint16 * uint16 computed in 16-bit arithmetic wraps.
-     * e.g., size=0x100, count=0x101 → 0x10100 truncated to 0x0100
-     * → allocates 256 bytes */
-    uint16_t total = size * count;
-    uint8_t *buf = malloc(total);
+    /* BUG: allocate using truncated uint16 result */
+    uint16_t alloc_size = (uint16_t)(size * count);
+    if (alloc_size == 0) alloc_size = 1;
+    uint8_t *buf = malloc(alloc_size);
     if (!buf) return -1;
 
-    /* BUG: memset uses the FULL unwrapped amount, overflows the buffer */
+    /* Write using full uint32 amount — overflows the small buffer */
     uint32_t real_total = (uint32_t)size * (uint32_t)count;
-    memset(buf, 'A', real_total);
+    for (uint32_t i = 0; i < real_total; i++) {
+        buf[i] = 'A';
+    }
 
     printf("Data: %u items of size %u (%u allocated, %u written)\n",
            count, size, total, real_total);
