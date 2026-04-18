@@ -217,23 +217,24 @@ graph TB
 | Token cost | Same | Same (same work, just concurrent) |
 | Complexity | Simple (tool functions) | More complex (workflow agents, per-finder tools) |
 
-## Open Questions
+## Validated Results
 
-1. **Does ParallelAgent work with Claude?** — `sub_agents` + `transfer_to_agent`
-   didn't work. But ParallelAgent doesn't use transfer — it runs agents directly.
-   Need to test.
+**ParallelAgent works with Claude on Vertex AI.** Tested and confirmed.
 
-2. **Does ParallelWorker work with Claude?** — Same question. WorkflowAgent nodes
-   may have Gemini-specific assumptions.
+The implemented architecture:
+- Phase 2: `ParallelAgent` runs N finders simultaneously (each with own sandbox + tools via closure)
+- Phase 3: Sequential per finding — verifier sandbox created, PoC copied, verified, destroyed. Then analyst sandbox created, report produced, destroyed.
+- 3/3 findings found, verified, analyzed, and reported in one run.
 
-3. **Dedup across parallel finders** — Multiple finders may find the same bug.
-   Need runtime dedup via shared state or a judge agent.
+## Remaining Considerations
 
-4. **Resource limits** — 4 parallel sandboxes × 8GB memory = 32GB. The VM has
-   ~30GB on n1-standard-8. May need to limit parallelism or reduce per-sandbox memory.
+1. **Dedup across parallel finders** — Multiple finders may find the same bug
+   (all 3 found Bug 3 in the canary test). Need runtime dedup via shared
+   `found_bugs.jsonl` or a judge agent.
 
-## Next Steps
+2. **Resource limits** — N parallel sandboxes × 8GB memory. The VM has ~30GB
+   on n1-standard-8, so max ~3 parallel finders. Reduce memory or use a
+   larger VM for more parallelism.
 
-1. Test if `ParallelAgent` works with Claude on Vertex AI
-2. If yes, implement Option C (per-finder tool closures)
-3. If no, implement manual parallelism via `asyncio.gather` + `_run_sub_agent`
+3. **Known bugs injection** — Each finder should know what other finders have
+   already found. Currently they all find the same easiest bug.
