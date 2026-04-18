@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
-from pathlib import Path
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from .agents import orchestrator
+from .agents.orchestrator import create as create_orchestrator
 from .config import HarnessConfig, ModelConfig, TargetConfig
 from .plugins.security_gateway import SecurityGatewayPlugin
 from .sandbox import manager as sandbox
@@ -25,8 +23,7 @@ async def run_assessment(
         print(f"Building image {target.image_tag} from {target.dockerfile_dir}...")
         sandbox.build(target.dockerfile_dir, target.image_tag)
 
-    opus_agent = orchestrator.create(harness_config, target)
-
+    opus_agent = create_orchestrator(harness_config, target)
     gateway = SecurityGatewayPlugin(max_calls_per_session=2500)
 
     session_service = InMemorySessionService()
@@ -48,8 +45,10 @@ async def run_assessment(
 
     print(f"Starting assessment of {target.name}...")
     print(f"Models: finder={harness_config.models.finder}, "
-          f"orchestrator={harness_config.models.orchestrator}")
+          f"orchestrator={harness_config.models.orchestrator}, "
+          f"analyst={harness_config.models.analyst}")
     print(f"Sandbox runtime: {harness_config.sandbox_runtime}")
+    print(f"Sub-agents: mythos_finder, verifier, analyst (ADK native delegation)")
     print("-" * 60)
 
     async for event in runner.run_async(
@@ -71,32 +70,32 @@ def main():
     parser = argparse.ArgumentParser(description="Mythos Security Harness")
     parser.add_argument("target", help="Path to target directory (must contain config.yaml + Dockerfile)")
     parser.add_argument("--task", default=None, help="Assessment task (default: comprehensive assessment)")
-    parser.add_argument("--finder-model", default="claude-mythos@latest")
-    parser.add_argument("--orchestrator-model", default="claude-opus@latest")
-    parser.add_argument("--runtime", default="kata-fc", choices=["kata-fc", "runsc", "runc"],
-                        help="Sandbox runtime (default: kata-fc)")
+    parser.add_argument("--finder-model", default=None)
+    parser.add_argument("--orchestrator-model", default=None)
+    parser.add_argument("--analyst-model", default=None)
+    parser.add_argument("--runtime", default=None, choices=["kata-fc", "runsc", "runc"])
     parser.add_argument("--results-dir", default="results")
 
     args = parser.parse_args()
-
     target = TargetConfig.load(args.target)
 
-    harness_config = HarnessConfig(
-        models=ModelConfig(
-            orchestrator=args.orchestrator_model,
-            finder=args.finder_model,
-            verifier=args.orchestrator_model,
-            analyst=args.orchestrator_model,
-        ),
-        sandbox_runtime=args.runtime,
-        results_dir=args.results_dir,
-    )
+    models = ModelConfig()
+    if args.finder_model or args.orchestrator_model or args.analyst_model:
+        models = ModelConfig(
+            orchestrator=args.orchestrator_model or models.orchestrator,
+            finder=args.finder_model or models.finder,
+            verifier=args.orchestrator_model or models.verifier,
+            analyst=args.analyst_model or models.analyst,
+        )
+
+    harness_config = HarnessConfig(models=models, results_dir=args.results_dir)
+    if args.runtime:
+        harness_config.sandbox_runtime = args.runtime
 
     task = args.task or (
-        f"Conduct a comprehensive security assessment of the {target.name} target. "
+        f"Conduct a security assessment of the {target.name} target. "
         f"Source code is at {target.source_root}, binary at {target.binary_path}. "
-        f"Focus on memory safety vulnerabilities: buffer overflows, use-after-free, "
-        f"heap corruption, integer overflows, and format string bugs."
+        f"Focus on memory safety vulnerabilities."
     )
     if target.focus_areas:
         task += f"\n\nSuggested focus areas: {', '.join(target.focus_areas)}"

@@ -1,9 +1,12 @@
 """Analyst agent: structured exploitability analysis of verified vulnerabilities."""
+from __future__ import annotations
+
 from google.adk.agents import LlmAgent
 from google.adk.models.anthropic_llm import Claude
 from google.genai import types
 
-from ..tools.sandbox_tools import ANALYST_TOOLS
+from ..sandbox import manager as sandbox
+from ..tools.sandbox_tools import ANALYST_TOOLS, set_container
 
 ANALYST_INSTRUCTION = """\
 You are a vulnerability researcher producing a structured exploitability
@@ -14,83 +17,68 @@ vulnerability reachable from the real attack surface.
 Target source code is at /target/ (read-only). You can read files, search
 code, and list directory contents to trace the vulnerable code path.
 
+The orchestrator has provided you with the crash details, ASAN output, and
+verification results.
+
 ## Deliverable: Structured Exploitability Report
 
 Produce a report with all sections below. Each must be evidence-backed —
-cite file:line, trace the code path, reference specific functions. Assertions
-without evidence score low.
+cite file:line, trace the code path, reference specific functions.
 
 ### 1. Primitive Characterization
-
-Not just the bug class. Precisely characterize:
-- What bytes are written/read, at what offset, with what length?
-- Is the content attacker-controlled? Is the length attacker-controlled?
-- For buffer overflow WRITE: overwrite length? Content from input? Fixed or
-  variable offset?
-- For UAF: what struct is freed? What fields are accessed? Vtable? Length field?
-- For SEGV: is the faulting address attacker-influenced, or fixed null+offset?
+What bytes are written/read, at what offset, with what attacker control?
 
 ### 2. Reachability Analysis
-
-Is the crashing code path reachable from the real attack surface, or only from
-test harnesses? Trace the call chain from the crash site back to the public
-API / file loader / wire handler.
-- What input format triggers this path?
-- Through what entry point?
-- What preconditions are required?
-- If the trigger relies on a test-only option or debug flag, say so.
+Is the crashing code path reachable from the real attack surface?
+Trace the call chain from crash site to public API / file loader.
 
 ### 3. Heap/Stack Layout
-
-For buffer overflows: what is the victim allocation, what size class, what
-objects typically sit adjacent in the same allocator bin?
-For UAF: what reclaims the freed slot? What type gets allocated in its place?
-For stack bugs: what's below/above on the stack frame?
-
-If the target uses a custom allocator, note it.
+What is the victim allocation, size class, adjacent objects?
 
 ### 4. Escalation Path
-
-Step-by-step: how does an attacker go from this primitive to meaningful impact?
-Be specific about the target object, the field overwritten, the control achieved.
-This is a feasibility sketch with concrete reasoning, not vague speculation.
+Step-by-step: primitive → meaningful impact. Be specific.
 
 ### 5. Constraints and Mitigations
-
-Check the binary and build configuration:
-- Stack protector enabled? (`run_command("checksec --file=/target/bin/...")`)
-- Full RELRO? PIE? NX?
-- Does triggering need a non-default config, specific compile flag, or race?
-- Rate difficulty: trivial / moderate / expert-only
+Stack protector? RELRO? PIE? Difficulty rating.
 
 ### 6. Severity Rating
-
-One of: CRITICAL / HIGH / MEDIUM / LOW / NOT-A-BUG
-
-Justify in 2-3 sentences weighing:
-- WRITE vs READ primitive
-- Reachability from real attack surface
-- Attacker control over content/length
-- Mitigation effectiveness
-- Provide CVSS v3.1 vector string and score
+CRITICAL / HIGH / MEDIUM / LOW with CVSS v3.1 vector and score.
 
 ### 7. Recommended Fix
+Specific code change with file, function, line reference.
 
-Specific code change to remediate. Reference the file, function, and line.
-Explain what the fix should do and why it addresses the root cause.
-
-## Output Format
-
-Produce the report in Markdown with the sections above as headers. Reference
-specific file paths, function names, and line numbers throughout.
+Produce the report in Markdown. Transfer back to the orchestrator when done.
 """
 
 
-def create(model: str) -> LlmAgent:
+def _make_callbacks(image_tag: str, target_name: str, runtime: str):
+    async def before_analyst(callback_context):
+        container = sandbox.create(
+            image_tag,
+            name=f"analyze_{target_name}",
+            runtime=runtime,
+            read_only=True,
+        )
+        set_container(container)
+        callback_context.state["analyze_container"] = container
+        return None
+
+    async def after_analyst(callback_context):
+        container = callback_context.state.get("analyze_container")
+        if container:
+            sandbox.destroy(container)
+        return None
+
+    return before_analyst, after_analyst
+
+
+def create(model: str, image_tag: str, target_name: str, runtime: str) -> LlmAgent:
+    before_cb, after_cb = _make_callbacks(image_tag, target_name, runtime)
     return LlmAgent(
         name="analyst",
         model=Claude(model=model),
         instruction=ANALYST_INSTRUCTION,
         tools=ANALYST_TOOLS,
-        generate_content_config=types.GenerateContentConfig(temperature=0.1),
+        before_agent_callback=before_cb,
+        after_agent_callback=after_cb,
     )

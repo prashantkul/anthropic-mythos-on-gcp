@@ -1,7 +1,7 @@
 """Root agent definition — ADK convention entry point.
 
 ADK expects agent.py at the package root with `root_agent` as the exported name.
-This wires the Opus orchestrator with target config and harness settings.
+Wires the Opus orchestrator with default target config and harness settings.
 """
 from .agents.orchestrator import create as create_orchestrator
 from .config import HarnessConfig, TargetConfig
