@@ -102,7 +102,7 @@ static int parse_data(Entry *e) {
     }
 
     printf("Data: %u items of size %u (%u allocated, %u written)\n",
-           count, size, total, real_total);
+           count, size, alloc_size, real_total);
     free(buf);
     return 0;
 }
