@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from .agents.orchestrator import create as create_orchestrator
+from .agents.orchestrator import create as create_orchestrator, get_sub_agent_tokens
 from .config import HarnessConfig, ModelConfig, TargetConfig
 from .plugins.security_gateway import SecurityGatewayPlugin
 from .sandbox import manager as sandbox
@@ -104,6 +104,15 @@ async def run_assessment(
                     if preview:
                         console.print(f"  [bold cyan][{author}][/bold cyan] {preview}")
                     result_text += part.text
+
+    # Merge sub-agent tokens
+    for agent_name, counts in get_sub_agent_tokens().items():
+        agent_tokens[agent_name] = {
+            "input": counts["input"],
+            "output": counts["output"],
+        }
+        total_input_tokens += counts["input"]
+        total_output_tokens += counts["output"]
 
     # Summary
     console.print()

@@ -29,12 +29,17 @@ from ..tools.sandbox_tools import set_container
 console = Console()
 
 
+_sub_agent_tokens: dict[str, dict[str, int]] = {}
+
+
 @retry(
     retry=retry_if_exception_type(Exception),
     wait=wait_exponential(multiplier=2, min=4, max=120),
     stop=stop_after_attempt(5),
 )
 def _run_sub_agent(agent: Agent, prompt: str) -> str:
+    agent_name = agent.name
+
     async def _run():
         session_service = InMemorySessionService()
         await session_service.create_session(
@@ -45,18 +50,44 @@ def _run_sub_agent(agent: Agent, prompt: str) -> str:
         )
         content = types.Content(role="user", parts=[types.Part(text=prompt)])
         result_text = ""
+        input_tokens = 0
+        output_tokens = 0
+        tool_calls = 0
+
         async for event in runner.run_async(
             new_message=content, user_id="harness", session_id="sub_session"
         ):
+            usage = getattr(event, 'usage_metadata', None)
+            if usage:
+                input_tokens += getattr(usage, 'prompt_token_count', 0) or 0
+                output_tokens += getattr(usage, 'candidates_token_count', 0) or 0
+
             if event.content and event.content.parts:
                 for part in event.content.parts:
-                    if part.text:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        tool_calls += 1
+                    elif part.text:
                         result_text += part.text
+
+        if agent_name not in _sub_agent_tokens:
+            _sub_agent_tokens[agent_name] = {"input": 0, "output": 0, "tool_calls": 0}
+        _sub_agent_tokens[agent_name]["input"] += input_tokens
+        _sub_agent_tokens[agent_name]["output"] += output_tokens
+        _sub_agent_tokens[agent_name]["tool_calls"] += tool_calls
+
+        console.print(
+            f"  [dim]{agent_name}: {input_tokens:,} in / {output_tokens:,} out / "
+            f"{tool_calls} tool calls[/dim]"
+        )
         return result_text
 
     with ThreadPoolExecutor() as executor:
         future = executor.submit(asyncio.run, _run())
         return future.result()
+
+
+def get_sub_agent_tokens() -> dict[str, dict[str, int]]:
+    return _sub_agent_tokens
 
 
 ORCHESTRATOR_INSTRUCTION = """\
