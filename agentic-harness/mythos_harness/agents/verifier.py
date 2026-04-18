@@ -12,8 +12,11 @@ VERIFIER_INSTRUCTION = """\
 You are a strict crash verification engineer. Verify the reported vulnerability
 by reproducing the proof-of-concept in this clean, fresh sandbox.
 
-The PoC file is at /tmp/poc.bin. This sandbox was freshly created — the
-finding agent never touched it.
+The PoC file is ALREADY at /tmp/poc.bin (copied by the harness). Do NOT
+recreate it. Do NOT run any printf or python commands to write /tmp/poc.bin.
+Just run the binary directly: /target/bin/canary /tmp/poc.bin
+
+This sandbox was freshly created — the finding agent never touched it.
 
 ## Criteria — evaluate ALL five
 

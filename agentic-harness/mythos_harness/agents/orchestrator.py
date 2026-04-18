@@ -89,8 +89,10 @@ You are an orchestrator coordinating vulnerability research via specialist tools
 - If finder returns a crash, IMMEDIATELY call run_verifier before investigating
   the next area
 - If verifier passes, IMMEDIATELY call run_analyst
+- After the analyst returns, you MUST call store_report with the analyst's output
 - After storing the report, move to the next focus area
 - Track what you've investigated to avoid redundancy
+- Do NOT end without calling store_report for every verified finding
 """
 
 
@@ -179,11 +181,13 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig, run_dir: 
         set_container(container_name)
 
         try:
+            binary_cmd = f"{target.binary_path} /tmp/poc.bin"
             prompt = (
                 f"Verify this crash in your fresh sandbox.\n\n"
-                f"PoC file: /tmp/poc.bin ({len(poc_bytes)} bytes)\n"
-                f"Reproduction command: {reproduction_command}\n"
+                f"PoC file: /tmp/poc.bin ({len(poc_bytes)} bytes) — ALREADY present, do NOT recreate it.\n"
+                f"Run this command: {binary_cmd}\n"
                 f"Expected crash type: {crash_type}\n"
+                f"Run it 3 times and check all 5 criteria.\n"
             )
             console.print("[cyan]  Running verifier agent...[/cyan]")
             return _run_sub_agent(_verifier_agent, prompt)
