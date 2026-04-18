@@ -1,0 +1,36 @@
+[project]
+name = "mythos-harness"
+version = "0.1.0"
+description = "Secure multi-agent harness for Claude Mythos vulnerability research on GCP"
+requires-python = ">=3.12"
+
+dependencies = [
+  "google-adk>=1.18.0",
+  "google-genai>=1.9.0",
+  "google-cloud-aiplatform>=1.127.0",
+  "google-cloud-storage>=2.18.0",
+  "google-cloud-bigquery>=3.25.0",
+  "google-cloud-logging>=3.11.0",
+  "anthropic[vertex]>=0.96.0",
+  "tenacity>=9.1.2",
+  "pyyaml>=6.0.3",
+  "python-dotenv>=1.2.1",
+  "rich>=13.9.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.26.0",
+  "ruff>=0.4.6",
+]
+
+[project.scripts]
+mythos-harness = "mythos_harness.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mythos_harness"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
