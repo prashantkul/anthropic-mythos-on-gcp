@@ -18,6 +18,7 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | [Option C: GKE](options/gke.md) | Most defense-in-depth, scales to teams, highest complexity |
 | [HARNESS.md](agentic-harness/HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
 | [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) | Multi-agent harness architecture: Opus orchestrator + Mythos worker, ADK vs LangGraph implementations, framework comparison |
+| [SETUP.md](SETUP.md) | GCE VM setup: VPC, firewall, Docker + gVisor, metadata blocking, harness install, teardown |
 | [SandboxBench Paper](Prashant_Kulkarni_SadboxBench.pdf) | Research: "SandboxBench: A Comprehensive Evaluation Framework for AI Agent Containment" (Kulkarni et al., SPAR Fall 2025) |
 
 ## Security Architecture
