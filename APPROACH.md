@@ -493,8 +493,8 @@ proxy) can be deployed as a network-level enforcement layer with CEL-based polic
 RBAC, and OpenTelemetry. For the current local-tool design, the ADK plugin is
 sufficient and simpler.
 
-See [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) for the full plugin
-implementation and how it integrates with the ADK multi-agent harness.
+See [FLOW.md](agentic-harness/FLOW.md) for the full security architecture
+and how the plugin integrates with the ADK multi-agent harness.
 
 ### 4.8 Ring 7 — On-Premises Proxy Routing
 

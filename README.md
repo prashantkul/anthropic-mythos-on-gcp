@@ -17,7 +17,8 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | [Option B: GCE + Firecracker](options/gce-docker.md) | **Recommended.** Firecracker micro-VM, hardware isolation, full flexibility |
 | [Option C: GKE](options/gke.md) | Most defense-in-depth, scales to teams, highest complexity |
 | [HARNESS.md](agentic-harness/HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
-| [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) | Multi-agent harness architecture: Mythos orchestrator + finder + verifier + analyst, ADK framework, security gateway |
+| [Sequential FLOW.md](agentic-harness/FLOW.md) | Sequential harness: flow, security choke points, trust boundaries, ADK implementation |
+| [Parallel FLOW.md](agentic-harness-parallel/FLOW.md) | Parallel harness: planner + ParallelAgent finders, same security model |
 | [SETUP.md](SETUP.md) | GCE VM setup: VPC, firewall, Docker + gVisor, metadata blocking, harness install, teardown |
 | [CLEARWING-REFERENCE.md](CLEARWING-REFERENCE.md) | Reference architecture: running [Clearwing](https://github.com/Lazarus-AI/clearwing) (LangGraph vuln scanner) inside our containment |
 | [SandboxBench Paper](Prashant_Kulkarni_SadboxBench.pdf) | Research: "SandboxBench: A Comprehensive Evaluation Framework for AI Agent Containment" (Kulkarni et al., SPAR Fall 2025) |
@@ -78,8 +79,8 @@ and `after_tool_callback` (output scanning, credential redaction). Native Vertex
 integration, all-Google ecosystem. [Agent Gateway](https://agentgateway.dev/)
 available for future MCP scenarios. LangGraph as alternative for built-in checkpointing.
 
-See [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) for full comparison, code
-examples for both ADK and LangGraph, and the security analysis.
+See [Sequential FLOW.md](agentic-harness/FLOW.md) and
+[Parallel FLOW.md](agentic-harness-parallel/FLOW.md) for detailed architecture.
 
 ## SandboxBench Findings
 

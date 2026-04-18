@@ -1,86 +1,52 @@
-# Harness Flow: Security-First Multi-Agent Vulnerability Research
+# Sequential Harness: Flow and Security Architecture
 
-[Back to README](../README.md) | [Architecture](../APPROACH.md)
+[Back to README](../README.md) | [GCE Setup](../SETUP.md)
 
 ## Overview
 
-A four-agent pipeline for automated vulnerability discovery, running on a
-GCE VM with sandboxed containers. Every agent tool call passes through
-multiple security choke points before reaching the sandbox.
+A four-agent sequential pipeline for vulnerability discovery on GCE.
+Mythos orchestrates, finds, verifies, and analyzes — each step in its
+own sandboxed container. Every tool call passes through three security
+choke points.
 
 ## Agent Hierarchy
 
 ```mermaid
 graph TB
-    R[Researcher] -->|task + focus areas| OPUS
+    R[Researcher] -->|task + focus areas| ORCH
 
     subgraph "Host VM — has GCP credentials"
-        OPUS["Mythos Orchestrator\n(Mythos / Opus fallback)\nPlans, delegates, reviews"]
+        ORCH["Mythos Orchestrator\nPlans, delegates, reviews"]
     end
 
-    OPUS -->|run_finder| FINDER
-    OPUS -->|run_verifier| VERIFIER
-    OPUS -->|run_analyst| ANALYST
+    ORCH -->|run_finder| FINDER
+    ORCH -->|run_verifier| VERIFIER
+    ORCH -->|run_analyst| ANALYST
 
     subgraph "Sandbox A — no credentials, no network"
-        FINDER["Mythos Finder\n(Mythos)\nReads code, crafts PoC, runs binary"]
+        FINDER["Mythos Finder\nReads code, crafts PoC, runs binary"]
     end
 
     subgraph "Sandbox B — no credentials, no network"
-        VERIFIER["Verifier\n(Mythos / Opus)\nReproduces PoC 3/3, 5 criteria"]
+        VERIFIER["Verifier\nReproduces PoC 3/3, 5 criteria"]
     end
 
     subgraph "Sandbox C — no credentials, no network, read-only"
-        ANALYST["Analyst\n(claude-sonnet-4-6)\nRoot cause, CVSS, remediation"]
+        ANALYST["Analyst (Sonnet 4.6)\nRoot cause, CVSS, remediation"]
     end
 
-    style OPUS fill:#0ea5e9,stroke:#333,color:#fff
+    style ORCH fill:#0ea5e9,stroke:#333,color:#fff
     style FINDER fill:#22c55e,stroke:#333,color:#fff
     style VERIFIER fill:#eab308,stroke:#333,color:#000
     style ANALYST fill:#3b82f6,stroke:#333,color:#fff
 ```
-
-## Security Choke Points
-
-Every tool call from a sub-agent passes through three independent choke
-points. A call must pass ALL three to execute.
-
-```mermaid
-graph LR
-    MODEL[Agent Model\nrequests tool call] --> CP1
-
-    CP1["CHOKE POINT 1\nADK Tool Registration\n-----\nAgent only sees allowed tools\nFinder: 6 tools\nVerifier: 2 tools\nAnalyst: 3 tools"]
-
-    CP1 --> CP2
-
-    CP2["CHOKE POINT 2\nSecurityGatewayPlugin\n-----\nbefore_tool_callback\nCommand blocklist\nPath restriction\nRate limiting\nOutput scanning"]
-
-    CP2 --> CP3
-
-    CP3["CHOKE POINT 3\nSandbox Isolation\n-----\n--network=none\n--cap-drop=ALL\nno credentials\nnon-root (UID 1000)\ngVisor runtime"]
-
-    CP3 --> EXEC[docker exec\nin sandbox]
-
-    style CP1 fill:#dc2626,stroke:#333,color:#fff
-    style CP2 fill:#dc2626,stroke:#333,color:#fff
-    style CP3 fill:#dc2626,stroke:#333,color:#fff
-    style EXEC fill:#16a34a,stroke:#333,color:#fff
-```
-
-### Choke Point Details
-
-| Choke Point | Layer | What It Blocks | Bypass Requires |
-|---|---|---|---|
-| **1. ADK Tool Registration** | Framework | Model can't call tools not in its list. Verifier has no `compile_code`. Analyst has no `run_command`. | Bug in ADK framework |
-| **2. SecurityGatewayPlugin** | Application | Blocks `curl`, `docker`, `ssh`, `git`, `nc`. Blocks paths outside `/target/` and `/tmp/`. Blocks `169.254.169.254`, `/proc/1/root`, `/var/run/docker.sock`. Redacts credentials in output. | Bug in plugin code |
-| **3. Sandbox Isolation** | Infrastructure | No network (can't exfiltrate). No capabilities (can't escape). No credentials (can't access GCP). gVisor intercepts syscalls. | Container runtime vulnerability |
 
 ## End-to-End Flow
 
 ```mermaid
 sequenceDiagram
     participant R as Researcher
-    participant O as Mythos (Host)
+    participant O as Orchestrator (Host)
     participant F as Finder (Sandbox A)
     participant V as Verifier (Sandbox B)
     participant A as Analyst (Sandbox C)
@@ -91,186 +57,189 @@ sequenceDiagram
     Note over O: For each focus area
 
     rect rgb(220, 252, 231)
-        Note over O,F: FIND PHASE
-        O->>O: Create sandbox (docker run --runtime=runsc --network=none)
+        Note over O,F: FIND
+        O->>O: Create sandbox (--runtime=runsc --network=none)
         O->>F: run_finder(task)
-        Note over F: Reads source, crafts PoC, runs binary
         Note over F: SecurityGatewayPlugin validates every tool call
         F->>O: Crash details + PoC at /tmp/poc.bin
-        O->>O: Extract PoC bytes from sandbox
-        O->>O: Destroy sandbox
+        O->>O: Extract PoC bytes, destroy sandbox
     end
 
     rect rgb(254, 249, 195)
-        Note over O,V: VERIFY PHASE
-        O->>O: Create fresh sandbox (same image)
-        O->>O: Copy PoC bytes to /tmp/poc.bin (stdin pipe)
+        Note over O,V: VERIFY
+        O->>O: Create fresh sandbox, copy PoC via stdin pipe
         O->>V: run_verifier(binary_cmd, crash_type)
         Note over V: Runs binary 3 times, checks 5 criteria
-        Note over V: SecurityGatewayPlugin validates every tool call
-        V->>O: Verdict (PASS/FAIL) + evidence
-        O->>O: Destroy sandbox
+        V->>O: Verdict (PASS/FAIL), destroy sandbox
     end
 
     rect rgb(219, 234, 254)
-        Note over O,A: ANALYZE PHASE
+        Note over O,A: ANALYZE
         O->>O: Create read-only sandbox
         O->>A: run_analyst(crash details)
-        Note over A: Reads source, traces root cause
-        Note over A: Produces 7-section exploitability report
-        A->>O: Report markdown
-        O->>D: Auto-save report to results/
+        A->>D: Report auto-saved
         O->>O: Destroy sandbox
     end
 
     Note over O: Repeat for next focus area
-
     O->>R: Final assessment summary
 ```
 
-## Sandbox Security Properties
+## Security Choke Points
+
+Every tool call passes through three independent layers. ALL three must
+approve for execution to proceed.
 
 ```mermaid
-graph TB
-    subgraph "What the Sandbox HAS"
-        HAS1[Source code at /target/src]
-        HAS2[ASAN binary at /target/bin]
-        HAS3[Writable /tmp tmpfs 512MB]
-        HAS4[gcc, python3, gdb, xxd]
-    end
+graph LR
+    MODEL[Agent] --> CP1["CHOKE POINT 1\nADK Tool Registration\nFinder: 6 tools\nVerifier: 2 tools\nAnalyst: 3 tools"]
+    CP1 --> CP2["CHOKE POINT 2\nSecurityGatewayPlugin\nCommand blocklist\nPath restriction\nOutput scanning"]
+    CP2 --> CP3["CHOKE POINT 3\nSandbox Isolation\n--network=none\n--cap-drop=ALL\ngVisor, non-root"]
+    CP3 --> EXEC[docker exec]
 
-    subgraph "What the Sandbox DOES NOT HAVE"
-        NO1[No network — zero egress/ingress]
-        NO2[No GCP credentials — no SA, no metadata]
-        NO3[No capabilities — cap-drop ALL]
-        NO4[No Docker socket]
-        NO5[No host namespaces — separate PID/net/mnt]
-        NO6[No root — runs as UID 1000]
-        NO7[No persistent storage — destroyed after use]
-    end
-
-    style NO1 fill:#dc2626,stroke:#333,color:#fff
-    style NO2 fill:#dc2626,stroke:#333,color:#fff
-    style NO3 fill:#dc2626,stroke:#333,color:#fff
-    style NO4 fill:#dc2626,stroke:#333,color:#fff
-    style NO5 fill:#dc2626,stroke:#333,color:#fff
-    style NO6 fill:#dc2626,stroke:#333,color:#fff
-    style NO7 fill:#dc2626,stroke:#333,color:#fff
-    style HAS1 fill:#16a34a,stroke:#333,color:#fff
-    style HAS2 fill:#16a34a,stroke:#333,color:#fff
-    style HAS3 fill:#16a34a,stroke:#333,color:#fff
-    style HAS4 fill:#16a34a,stroke:#333,color:#fff
+    style CP1 fill:#dc2626,stroke:#333,color:#fff
+    style CP2 fill:#dc2626,stroke:#333,color:#fff
+    style CP3 fill:#dc2626,stroke:#333,color:#fff
+    style EXEC fill:#16a34a,stroke:#333,color:#fff
 ```
+
+| Choke Point | Layer | Blocks | Bypass Requires |
+|---|---|---|---|
+| **ADK Tool Registration** | Framework | Tools not in agent's list | ADK bug |
+| **SecurityGatewayPlugin** | Application | `curl`, `docker`, `ssh`, `git`, `nc`. Paths outside `/target/`, `/tmp/`. Metadata IP. Credentials in output | Plugin bug |
+| **Sandbox Isolation** | Infrastructure | Network, capabilities, credentials, host access | Runtime vulnerability |
+
+## Verification: Two-Sandbox Trust Boundary
+
+A finding is not confirmed until a separate agent reproduces it in a
+**fresh sandbox** from the same image. Only PoC bytes cross.
+
+```mermaid
+graph LR
+    FIND[Find Sandbox\nAgent crafts PoC] -->|PoC bytes only| GRADE[Grade Sandbox\nFresh, same image]
+    GRADE -->|3/3?| V{Pass?}
+    V -->|yes| REPORT[Analyze + Report]
+    V -->|no| DISCARD[Discard]
+
+    style FIND fill:#22c55e,stroke:#333,color:#fff
+    style GRADE fill:#eab308,stroke:#333,color:#000
+    style DISCARD fill:#999,stroke:#333,color:#fff
+```
+
+**5 criteria** — all must pass:
+
+| # | Check |
+|---|---|
+| 1 | PoC file exists and is non-empty |
+| 2 | Crash reproduces 3/3 times |
+| 3 | Not OOM or timeout (exit 137/124) |
+| 4 | Crash is in project code (not just libc) |
+| 5 | Consistent crash type across all runs |
+
+## Sandbox Properties
+
+| Property | Finder | Verifier | Analyst |
+|---|---|---|---|
+| Container name | `find_{target}_{uuid}` | `grade_{target}_{uuid}` | `analyze_{target}_{uuid}` |
+| Runtime | `--runtime=runsc` | `--runtime=runsc` | `--runtime=runsc` |
+| Network | `--network=none` | `--network=none` | `--network=none` |
+| Read-only rootfs | No (needs to compile) | No (needs to run PoC) | Yes |
+| Has PoC | Agent creates at /tmp/poc.bin | Harness copies before start | No |
+| Credentials | None | None | None |
+| Lifetime | Created → used → destroyed per call | Same | Same |
 
 ## Trust Boundaries
 
 ```mermaid
 graph LR
-    subgraph "TRUSTED — Host VM"
-        HARNESS[Harness Process\nGCP SA via metadata\nCalls Vertex AI\nManages sandboxes]
+    subgraph "TRUSTED — Host"
+        H[Harness\nGCP SA, Vertex AI]
+    end
+    subgraph "UNTRUSTED — Sandbox"
+        S[Agent\nNo creds, no network]
     end
 
-    subgraph "UNTRUSTED — Sandbox Containers"
-        SBX[Agent Workspace\nNo credentials\nNo network\ngVisor isolated]
-    end
+    H -->|docker exec| S
+    S -->|stdout/stderr| H
+    H -->|stdin pipe PoC| S
 
-    HARNESS -->|"docker exec\n(tool calls)"| SBX
-    SBX -->|"stdout/stderr\n(tool results)"| HARNESS
-    HARNESS -->|"stdin pipe\n(PoC bytes only)"| SBX
+    H -->|accessible| META[Metadata]
+    S -.->|BLOCKED| META
 
-    HARNESS -.->|"BLOCKED from sandbox"| META[GCP Metadata\n169.254.169.254]
-    HARNESS -->|"accessible from host"| META
-
-    style HARNESS fill:#0ea5e9,stroke:#333,color:#fff
-    style SBX fill:#dc2626,stroke:#333,color:#fff
+    style H fill:#0ea5e9,stroke:#333,color:#fff
+    style S fill:#dc2626,stroke:#333,color:#fff
     style META fill:#6b7280,stroke:#333,color:#fff
 ```
 
-**Data that crosses the trust boundary:**
-
-| Direction | What | How |
-|---|---|---|
-| Host → Sandbox | Tool call commands | `docker exec` arguments |
-| Host → Sandbox | PoC bytes (verifier only) | `docker exec -i sh -c 'cat > /tmp/poc.bin'` |
-| Sandbox → Host | Tool call output (stdout/stderr) | `docker exec` return |
-| Sandbox → Host | PoC file bytes (finder only) | `docker exec cat /tmp/poc.bin` |
-
-**Data that NEVER crosses:**
-
-| What | Why |
+| Crosses Boundary | How |
 |---|---|
-| GCP credentials | Sandbox has no SA, metadata blocked by iptables |
-| Network traffic | `--network=none` on all sandboxes |
-| Host filesystem | No volume mounts to host paths |
-| Docker socket | Never mounted |
-| Other sandbox state | Each sandbox is independent, destroyed after use |
+| Tool commands (host → sandbox) | `docker exec` arguments |
+| PoC bytes (host → verifier) | `docker exec -i sh -c 'cat > /tmp/poc.bin'` |
+| Tool output (sandbox → host) | `docker exec` stdout/stderr |
+| PoC bytes (finder → host) | `docker exec cat /tmp/poc.bin` |
 
-## SecurityGatewayPlugin Detail
+| NEVER Crosses | Why |
+|---|---|
+| GCP credentials | No SA, metadata blocked |
+| Network traffic | `--network=none` |
+| Host filesystem | No mounts |
+| Docker socket | Never mounted |
+
+## ADK Implementation Details
+
+### Why Tool-Based Delegation (Not sub_agents)
+
+ADK's `sub_agents` + `transfer_to_agent` doesn't work with Claude on Vertex AI
+(designed for Gemini). We use the pattern from
+[ai-security-agent](https://github.com/google/adk-samples/tree/main/python/agents/ai-security-agent):
+sub-agents run inside tool functions via fresh Runner + ThreadPoolExecutor.
+
+### SecurityGatewayPlugin Registered on Every Runner
+
+The plugin is on the orchestrator's Runner AND each sub-agent's Runner.
+Without this, sub-agent tool calls bypass the gateway.
+
+### Agent Gateway — Future MCP Scenarios
+
+Our tools are local Python functions. The SecurityGatewayPlugin intercepts
+in-process. If tools later become MCP servers:
+
+| Product | When |
+|---|---|
+| [agentgateway.dev](https://agentgateway.dev/) | Open-source MCP/A2A proxy for infra-level policy |
+| [Google Cloud Agent Gateway](https://cloud.google.com/iam/docs/roles-permissions/agentgateway) | GCP managed agent networking |
+
+Neither applies to our current local-tool design.
+
+## Resource Budgets
+
+| Resource | Orchestrator | Finder | Verifier |
+|---|---|---|---|
+| Max turns | 50 | High (tune per target) | 50 |
+| Max runtime | 8 hours | 4 hours per delegation | 15 min |
+| Max output | — | 100KB per tool call | 100KB |
+| Container memory | — | 8GB | 4GB |
+
+## Validation with SandboxBench
+
+Before deploying, run SandboxBench escape challenges against the environment:
 
 ```mermaid
-graph TB
-    CALL[Tool Call from Agent] --> CHECK_AGENT{Agent is\nfinder or verifier?}
+graph LR
+    SBX[SandboxBench] --> HARNESS[Your Harness]
+    HARNESS --> SANDBOX[Your Sandbox]
+    SBX -->|verify| R{Escaped?}
+    R -->|yes| FIX[Fix]
+    R -->|no| DEPLOY[Deploy]
+    FIX --> SBX
 
-    CHECK_AGENT -->|No — orchestrator/analyst| ALLOW[Allow — no sandbox rules]
-    CHECK_AGENT -->|Yes| CHECK_RATE{Rate limit\nexceeded?}
-
-    CHECK_RATE -->|Yes| DENY1[DENY: rate limit]
-    CHECK_RATE -->|No| CHECK_CMD{Command\nin blocklist?}
-
-    CHECK_CMD -->|curl, docker, ssh...| DENY2[DENY: blocked command]
-    CHECK_CMD -->|No| CHECK_ARGS{Arguments match\ndeny patterns?}
-
-    CHECK_ARGS -->|169.254.169.254, /proc/1/root...| DENY3[DENY: blocked pattern]
-    CHECK_ARGS -->|No| CHECK_PATH{Path outside\n/target/ or /tmp/?}
-
-    CHECK_PATH -->|Yes| DENY4[DENY: path restricted]
-    CHECK_PATH -->|No| EXEC[Execute tool call]
-
-    EXEC --> SCAN{Scan output\nfor credentials}
-    SCAN -->|Found| REDACT[Redact and return]
-    SCAN -->|Clean| RETURN[Return result]
-
-    style DENY1 fill:#dc2626,stroke:#333,color:#fff
-    style DENY2 fill:#dc2626,stroke:#333,color:#fff
-    style DENY3 fill:#dc2626,stroke:#333,color:#fff
-    style DENY4 fill:#dc2626,stroke:#333,color:#fff
-    style REDACT fill:#eab308,stroke:#333,color:#000
-    style EXEC fill:#16a34a,stroke:#333,color:#fff
-    style RETURN fill:#16a34a,stroke:#333,color:#fff
+    style FIX fill:#dc2626,stroke:#333,color:#fff
+    style DEPLOY fill:#16a34a,stroke:#333,color:#fff
 ```
 
-## GCE VM Security Context
-
-```mermaid
-graph TB
-    subgraph "GCP Project — privacy-ml-lab1"
-        subgraph "VPC: mythos-vpc (private)"
-            subgraph "GCE VM: mythos-harness (no external IP)"
-                HARNESS[Harness Process] --> DOCKER[Docker + gVisor]
-                DOCKER --> SBX_A[Sandbox A]
-                DOCKER --> SBX_B[Sandbox B]
-                DOCKER --> SBX_C[Sandbox C]
-                IPT[iptables: block metadata\nfrom container subnets]
-            end
-
-            FW1[Firewall: deny all ingress]
-            FW2[Firewall: allow IAP SSH only]
-        end
-
-        NAT[Cloud NAT — egress only]
-        SA[mythos-orchestrator-sa\nroles: aiplatform.user\nstorage.objectAdmin\nlogging.logWriter]
-        VTXAI[Vertex AI\nClaude Mythos\nClaude Sonnet 4.6]
-    end
-
-    HARNESS -->|Private Google Access| VTXAI
-    HARNESS -->|VM metadata| SA
-
-    SBX_A -.->|BLOCKED| VTXAI
-    SBX_A -.->|BLOCKED by iptables| SA
-
-    style SBX_A fill:#dc2626,stroke:#333,color:#fff
-    style SBX_B fill:#dc2626,stroke:#333,color:#fff
-    style SBX_C fill:#dc2626,stroke:#333,color:#fff
-    style HARNESS fill:#0ea5e9,stroke:#333,color:#fff
-    style FW1 fill:#dc2626,stroke:#333,color:#fff
-    style IPT fill:#dc2626,stroke:#333,color:#fff
+| Category | Expected |
+|---|---|
+| Escape (8 challenges) | 0/8 |
+| Exfiltration (3) | 0/3 |
+| Persistence (3) | 0/3 |
+| Replication (2) | 0/2 |

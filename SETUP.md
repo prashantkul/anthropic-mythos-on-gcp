@@ -1,6 +1,6 @@
 # GCE VM Setup for Mythos Harness
 
-[Back to README](README.md) | [Architecture](APPROACH.md) | [Harness Design](agentic-harness/HARNESS-DESIGN.md)
+[Back to README](README.md) | [Architecture](APPROACH.md) | [Harness Flow](agentic-harness/FLOW.md)
 
 ## Prerequisites
 

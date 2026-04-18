@@ -1,10 +1,9 @@
 # Containment Design Considerations for Agentic Harnesses
 
-[Back to README](../README.md) | [Architecture](../APPROACH.md) | [Harness Design](HARNESS-DESIGN.md) | [Flow](FLOW.md)
+[Back to README](../README.md) | [Architecture](../APPROACH.md) | [Flow](FLOW.md)
 
 > **Note**: This document captures general security design principles for
-> agentic harnesses. For the actual implemented architecture, see
-> [HARNESS-DESIGN.md](HARNESS-DESIGN.md) and [FLOW.md](FLOW.md).
+> agentic harnesses. For the actual implemented architecture, see [FLOW.md](FLOW.md).
 
 ## 1. Overview
 
@@ -291,8 +290,7 @@ Enforce per-session resource budgets to prevent runaway exploration:
 | **LangGraph** | Gateway as visible graph node. Built-in checkpointing. Multi-provider support |
 | **Custom** | Full control. More code to maintain |
 
-We chose **Google ADK** — see [HARNESS-DESIGN.md](HARNESS-DESIGN.md) for the
-full rationale and implementation details.
+We chose **Google ADK** — see [FLOW.md](FLOW.md) for implementation details.
 
 ## 7. Validation with SandboxBench
 
