@@ -161,11 +161,30 @@ sudo apt-get install -y runsc
 
 # Register runsc as Docker runtime
 sudo runsc install
+
+# Configure Docker DNS — VPC has no default DNS for containers.
+# Use GCP metadata DNS as primary, Google public DNS as fallback.
+cat <<'DEOF' | sudo tee /etc/docker/daemon.json
+{
+    "runtimes": {
+        "runsc": {
+            "path": "/usr/bin/runsc"
+        }
+    },
+    "dns": ["169.254.169.254", "8.8.8.8"]
+}
+DEOF
 sudo systemctl restart docker
 
 # Verify gVisor works (should show kernel 4.4.0, not host kernel)
 docker run --rm --runtime=runsc alpine uname -r
 ```
+
+> **Note**: The DNS config is required because our private VPC has no default
+> DNS for Docker containers. Without it, `docker build` fails with
+> `Temporary failure resolving` errors. The metadata DNS (`169.254.169.254`)
+> is accessible from Docker build containers (only blocked from runtime
+> containers via iptables FORWARD rules in Step 6).
 
 ### Kata Containers (Future — Requires Nested Virtualization)
 
