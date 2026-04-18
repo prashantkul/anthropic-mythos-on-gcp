@@ -4,17 +4,20 @@ from pathlib import Path
 
 import yaml
 
-SANDBOX_RUNTIME = os.environ.get("MYTHOS_SANDBOX_RUNTIME", "kata-fc")
+SANDBOX_RUNTIME = os.environ.get("MYTHOS_SANDBOX_RUNTIME", "runsc")
 SANDBOX_MEMORY = os.environ.get("MYTHOS_SANDBOX_MEMORY", "8g")
 SANDBOX_NETWORK = "none"
+
+OPUS_MODEL = os.environ.get("MYTHOS_OPUS_MODEL", "publishers/anthropic/models/claude-opus-4-7")
+FINDER_MODEL = os.environ.get("MYTHOS_FINDER_MODEL", OPUS_MODEL)
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    orchestrator: str = "claude-opus@latest"
-    finder: str = "claude-mythos@latest"
-    verifier: str = "claude-opus@latest"
-    analyst: str = "claude-opus@latest"
+    orchestrator: str = OPUS_MODEL
+    finder: str = FINDER_MODEL
+    verifier: str = OPUS_MODEL
+    analyst: str = OPUS_MODEL
 
 
 @dataclass(frozen=True)
