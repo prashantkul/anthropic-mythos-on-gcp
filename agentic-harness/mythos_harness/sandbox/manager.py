@@ -23,8 +23,7 @@ def create(
     network: str = SANDBOX_NETWORK,
     memory: str = SANDBOX_MEMORY,
     read_only: bool = True,
-) -> tuple[str, str]:
-    """Create a sandbox container. Returns (name, docker_command_string)."""
+) -> str:
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
     cmd = [
@@ -45,12 +44,10 @@ def create(
 
     cmd.extend([image_tag, "/bin/bash"])
 
-    docker_cmd_str = " ".join(cmd)
-
     r = subprocess.run(cmd, check=False, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"sandbox create failed (exit {r.returncode}): {r.stderr.strip()}")
-    return name, docker_cmd_str
+    return name
 
 
 def execute(
