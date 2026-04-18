@@ -19,6 +19,7 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | [HARNESS.md](agentic-harness/HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
 | [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) | Multi-agent harness architecture: Mythos orchestrator + finder + verifier + analyst, ADK framework, security gateway |
 | [SETUP.md](SETUP.md) | GCE VM setup: VPC, firewall, Docker + gVisor, metadata blocking, harness install, teardown |
+| [CLEARWING-REFERENCE.md](CLEARWING-REFERENCE.md) | Reference architecture: running [Clearwing](https://github.com/Lazarus-AI/clearwing) (LangGraph vuln scanner) inside our containment |
 | [SandboxBench Paper](Prashant_Kulkarni_SadboxBench.pdf) | Research: "SandboxBench: A Comprehensive Evaluation Framework for AI Agent Containment" (Kulkarni et al., SPAR Fall 2025) |
 
 ## Security Architecture
