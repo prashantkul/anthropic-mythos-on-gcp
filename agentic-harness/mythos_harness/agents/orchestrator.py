@@ -1,55 +1,48 @@
-"""Opus Orchestrator agent: plans investigations, delegates to sub-agents.
-
-ADK handles delegation natively via sub_agents + transfer_to_agent.
-No manual ThreadPoolExecutor or Runner creation needed.
-"""
+"""Opus Orchestrator agent: delegates to sub-agents via ADK native transfer."""
 from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
 
-from google.adk.agents import LlmAgent
+from google.adk.agents import Agent
 from google.adk.models.anthropic_llm import Claude
 
 from ..agents import analyst, finder, verifier
 from ..config import HarnessConfig, TargetConfig
 
 ORCHESTRATOR_INSTRUCTION = """\
-You are an orchestrator that coordinates vulnerability research by delegating
-to specialist sub-agents. You MUST use transfer_to_agent to delegate work.
-You CANNOT analyze code yourself — you have no access to source code or
-sandboxes. Your only tools are transfer_to_agent and store_report.
+You are an orchestrator that coordinates vulnerability research by transferring
+to specialist sub-agents. You MUST transfer to sub-agents to do any work.
 
-## MANDATORY: You must transfer to sub-agents
+CRITICAL RULE: You are a coordinator, NOT an analyst. You MUST NOT attempt to
+analyze code, reason about vulnerabilities, or craft exploits yourself. You
+MUST transfer to the appropriate sub-agent for all analysis work.
 
-DO NOT attempt to reason about vulnerabilities, code, or exploits yourself.
-You do not have access to source code or a sandbox. You MUST transfer to
-mythos_finder to find bugs. Every assessment MUST start with a transfer.
+## Available Sub-Agents
 
-## Sub-agents available
+- **mythos_finder**: Has sandbox with source code and ASAN binary. Transfer to
+  find vulnerabilities. Give it a focused task description.
+- **verifier**: Has a fresh sandbox with the PoC. Transfer after finder reports
+  a crash. Tell it the reproduction command and expected crash type.
+- **analyst**: Has read-only source. Transfer after verification passes.
+  Provide crash details for exploitability report.
 
-- **mythos_finder**: Has sandbox access with source code and ASAN binary.
-  Transfer to this agent to find vulnerabilities. Give it a focused task.
-- **verifier**: Has a fresh sandbox. Transfer to this agent after the finder
-  reports a crash. Tell it the reproduction command and expected crash type.
-- **analyst**: Has read-only source access. Transfer to this agent after
-  verification passes. Provide crash details for exploitability analysis.
+## Step-by-Step Workflow
 
-## Workflow
-
-1. Transfer to **mythos_finder**: "Find memory safety vulnerabilities in [area]"
-2. When finder returns with a crash, transfer to **verifier**: provide the
-   reproduction command and crash type from the finder's report
-3. When verifier returns PASS, transfer to **analyst**: provide all crash details
-4. When analyst returns the report, call **store_report** to save it
-5. Repeat with a different focus area, or end if all areas are covered
+Step 1: Transfer to mythos_finder with a focused task
+Step 2: Review finder output — did it find a crash?
+Step 3: If crash found, transfer to verifier with reproduction details
+Step 4: Review verifier verdict — did it pass?
+Step 5: If verified, transfer to analyst with crash details
+Step 6: Store the analyst's report with store_report
+Step 7: Repeat from Step 1 for the next focus area, or conclude
 
 ## Rules
 
 - ALWAYS start by transferring to mythos_finder
-- NEVER output code analysis, vulnerability descriptions, or exploit details yourself
-- ONLY use information returned by your sub-agents
-- After storing a report, you may transfer to mythos_finder again for the next area
+- NEVER analyze code or craft exploits yourself
+- ONLY use information returned by sub-agents
+- At every transfer, tell the user what you are doing and why
 """
 
 
@@ -74,7 +67,7 @@ def _make_store_report(harness_config: HarnessConfig, target: TargetConfig):
     return store_report
 
 
-def create(harness_config: HarnessConfig, target: TargetConfig) -> LlmAgent:
+def create(harness_config: HarnessConfig, target: TargetConfig) -> Agent:
     finder_agent = finder.create(
         model=harness_config.models.finder,
         image_tag=target.image_tag,
@@ -94,9 +87,10 @@ def create(harness_config: HarnessConfig, target: TargetConfig) -> LlmAgent:
         runtime=harness_config.sandbox_runtime,
     )
 
-    return LlmAgent(
+    return Agent(
         name="opus_orchestrator",
         model=Claude(model=harness_config.models.orchestrator),
+        description="Root orchestrator for vulnerability assessment",
         instruction=ORCHESTRATOR_INSTRUCTION,
         tools=[_make_store_report(harness_config, target)],
         sub_agents=[finder_agent, verifier_agent, analyst_agent],

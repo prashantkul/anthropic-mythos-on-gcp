@@ -3,55 +3,28 @@ from __future__ import annotations
 
 import base64
 
-from google.adk.agents import LlmAgent
+from google.adk.agents import Agent
 from google.adk.models.anthropic_llm import Claude
-from google.genai import types
 
 from ..sandbox import manager as sandbox
 from ..tools.sandbox_tools import VERIFIER_TOOLS, set_container
 
 VERIFIER_INSTRUCTION = """\
-You are a strict crash verification engineer. Your job is to independently
-verify a reported vulnerability by reproducing a proof-of-concept in a clean,
-fresh sandbox that the finding agent never touched.
+You are a strict crash verification engineer. Verify a reported vulnerability
+by reproducing the proof-of-concept in this clean, fresh sandbox.
 
-A PoC file has been placed at /tmp/poc.bin in your sandbox. This sandbox was
-freshly created from the same image — the only thing that crossed the trust
-boundary is the PoC bytes.
-
-The orchestrator has provided you with the reproduction command and expected
-crash type. Use that information to verify.
+A PoC file has been placed at /tmp/poc.bin. This sandbox was freshly created
+from the same image — the finding agent never touched it.
 
 ## Criteria — evaluate ALL five
 
-### Criterion 1: PoC file is valid
-- Check /tmp/poc.bin exists and is non-empty
-- FAIL if missing or zero bytes
+1. **PoC file valid**: /tmp/poc.bin exists and is non-empty
+2. **Reproduces 3/3**: Run the reproduction command 3 times, all must crash
+3. **Not OOM/timeout**: Exit 137=OOM, 124=timeout → FAIL
+4. **In project code**: ASAN trace must show project source files
+5. **Consistent**: Same crash type across all 3 runs
 
-### Criterion 2: Crash reproduces in fresh container
-- Run the reproduction command exactly 3 times
-- Record exit code and stderr each time
-- PASS requires crash on at least 3/3 runs
-
-### Criterion 3: Not OOM or timeout
-- Check output for: "out of memory", "cannot allocate",
-  "allocation-size-too-big"
-- Check exit code: 137 = SIGKILL/OOM, 124 = timeout
-- FAIL if OOM or timeout
-
-### Criterion 4: Crash is in project code
-- ASAN stack trace must reference source files from the project
-- FAIL if trace is entirely runtime with no project frames
-
-### Criterion 5: Consistent crash type
-- The ASAN error class must be the same across all 3 runs
-- FAIL only if the crash class itself differs between runs
-
-## Output
-
-State each criterion as PASS or FAIL with evidence, then give an overall
-verdict (PASS/FAIL) and a score (0.0-1.0). Transfer back to the orchestrator
-with your verdict.
+Report each criterion as PASS/FAIL with evidence, overall verdict, and score.
 """
 
 
@@ -80,13 +53,17 @@ def _make_callbacks(image_tag: str, target_name: str, runtime: str):
     return before_verifier, after_verifier
 
 
-def create(model: str, image_tag: str, target_name: str, runtime: str) -> LlmAgent:
+def create(model: str, image_tag: str, target_name: str, runtime: str) -> Agent:
     before_cb, after_cb = _make_callbacks(image_tag, target_name, runtime)
-    return LlmAgent(
+    return Agent(
         name="verifier",
         model=Claude(model=model),
+        description="Crash verification agent. Has a fresh sandbox with the PoC file "
+                    "at /tmp/poc.bin. Reproduces the crash 3/3 times and checks 5 "
+                    "criteria. Transfer to this agent after the finder reports a crash.",
         instruction=VERIFIER_INSTRUCTION,
         tools=VERIFIER_TOOLS,
+        output_key="verifier_output",
         before_agent_callback=before_cb,
         after_agent_callback=after_cb,
     )
