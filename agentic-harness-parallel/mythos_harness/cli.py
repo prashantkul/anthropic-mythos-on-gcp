@@ -18,6 +18,8 @@ def main():
     parser.add_argument("target", help="Path to target directory (config.yaml + Dockerfile)")
     parser.add_argument("--focus-areas", nargs="+", default=None,
                         help="Focus areas (default: from config.yaml)")
+    parser.add_argument("--auto-plan", action="store_true",
+                        help="Let the planner agent determine focus areas (ignores config)")
     parser.add_argument("--finder-model", default=None)
     parser.add_argument("--orchestrator-model", default=None)
     parser.add_argument("--analyst-model", default=None)
@@ -40,9 +42,11 @@ def main():
     if args.runtime:
         harness_config.sandbox_runtime = args.runtime
 
-    focus_areas = args.focus_areas or target.focus_areas
-    if not focus_areas:
-        focus_areas = ["memory safety vulnerabilities"]
+    if args.auto_plan:
+        focus_areas = None
+    else:
+        focus_areas = args.focus_areas or target.focus_areas or None
+    auto_plan = focus_areas is None
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(harness_config.results_dir, target.name, ts)
@@ -52,6 +56,7 @@ def main():
     print(f"  Target:       {C_BOLD}{target.name}{C_RESET}")
     print(f"  Finder:       {harness_config.models.finder}")
     print(f"  Analyst:      {harness_config.models.analyst}")
+    print(f"  Planner:      {'auto (model decides)' if auto_plan else f'{len(focus_areas)} from config'}")
     print(f"  Runtime:      {harness_config.sandbox_runtime}")
     print(f"  Focus areas:  {len(focus_areas)}")
     for i, area in enumerate(focus_areas):

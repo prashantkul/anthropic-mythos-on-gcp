@@ -16,7 +16,9 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from .agents import analyst, finder, verifier
+import re
+
+from .agents import analyst, finder, planner, verifier
 from .config import HarnessConfig, TargetConfig
 from .plugins.security_gateway import SecurityGatewayPlugin
 from .sandbox import manager as sandbox
@@ -63,7 +65,9 @@ def print_token_summary():
     print(f"  {C_BOLD}{'TOTAL':35s}  {total_in:>8,} in  {total_out:>8,} out  {total_in+total_out:>8,} total{C_RESET}")
 
 
-async def _run_single_agent(agent: Agent, prompt: str, plugins: list | None = None) -> str:
+async def _run_single_agent(
+    agent: Agent, prompt: str, plugins: list | None = None, verbose: bool = False,
+) -> str:
     """Run a single agent and collect its text output."""
     session_service = InMemorySessionService()
     sid = f"session_{agent.name}"
@@ -82,6 +86,14 @@ async def _run_single_agent(agent: Agent, prompt: str, plugins: list | None = No
         _track_tokens(event, agent.name)
         if event.content and event.content.parts:
             for part in event.content.parts:
+                if verbose:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        fc = part.function_call
+                        args_str = str(dict(fc.args))[:150] if fc.args else ""
+                        print(f"    {C_DIM}TOOL: {fc.name}({args_str}){C_RESET}")
+                    elif part.text:
+                        for line in part.text.strip().split("\n")[:5]:
+                            print(f"    {C_DIM}{line[:120]}{C_RESET}")
                 if part.text:
                     result_text += part.text
     return result_text
@@ -115,9 +127,25 @@ async def _run_workflow(workflow_agent, prompt: str, plugins: list | None = None
     return results
 
 
+def _parse_focus_areas(planner_output: str) -> list[str]:
+    """Extract focus areas from planner output."""
+    m = re.search(r"<focus_areas>(.*?)</focus_areas>", planner_output, re.DOTALL)
+    if m:
+        lines = m.group(1).strip().split("\n")
+    else:
+        lines = planner_output.strip().split("\n")
+
+    areas = []
+    for line in lines:
+        line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
+        if line and len(line) > 5:
+            areas.append(line)
+    return areas[:6]
+
+
 async def run_parallel_assessment(
     target: TargetConfig,
-    focus_areas: list[str],
+    focus_areas: list[str] | None,
     harness_config: HarnessConfig,
     run_dir: str,
 ):
@@ -126,6 +154,45 @@ async def run_parallel_assessment(
         sandbox.build(target.dockerfile_dir, target.image_tag)
 
     gateway = SecurityGatewayPlugin()
+
+    # ── Phase 1: Planner explores source, determines focus areas ──
+    if not focus_areas:
+        print(f"\n{C_BOLD}Phase 1: Planning — exploring source code{C_RESET}")
+        pc = f"plan_{target.name}"
+        sandbox.create(target.image_tag, name=pc, runtime=harness_config.sandbox_runtime, read_only=True)
+        print(f"  {C_CYAN}[planner]{C_RESET} Sandbox: {pc}")
+
+        planner_agent = planner.create(
+            model=harness_config.models.orchestrator,
+            container_name=pc,
+            binary_path=target.binary_path,
+        )
+
+        print(f"  {C_CYAN}[planner]{C_RESET} Analyzing codebase...\n")
+        planner_output = await _run_single_agent(
+            planner_agent,
+            f"Explore {target.source_root} and identify focus areas for vulnerability research.",
+            plugins=[gateway],
+            verbose=True,
+        )
+
+        sandbox.destroy(pc)
+        print(f"\n  {C_DIM}[planner] Sandbox destroyed{C_RESET}")
+
+        focus_areas = _parse_focus_areas(planner_output)
+
+        if not focus_areas:
+            print(f"  {C_RED}[planner]{C_RESET} No focus areas identified — falling back to generic")
+            focus_areas = ["memory safety vulnerabilities"]
+
+        print(f"\n  {C_CYAN}[planner]{C_RESET} {C_BOLD}Focus areas ({len(focus_areas)}):{C_RESET}")
+        for i, area in enumerate(focus_areas):
+            print(f"    {C_GREEN}{i}{C_RESET}: {area}")
+    else:
+        print(f"\n{C_BOLD}Phase 1: Using provided focus areas ({len(focus_areas)}){C_RESET}")
+        for i, area in enumerate(focus_areas):
+            print(f"    {C_GREEN}{i}{C_RESET}: {area}")
+
     n = len(focus_areas)
 
     # ── Phase 2: Parallel finders only ──
