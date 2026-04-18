@@ -8,7 +8,7 @@ SANDBOX_RUNTIME = os.environ.get("MYTHOS_SANDBOX_RUNTIME", "runsc")
 SANDBOX_MEMORY = os.environ.get("MYTHOS_SANDBOX_MEMORY", "8g")
 SANDBOX_NETWORK = "none"
 
-OPUS_MODEL = os.environ.get("MYTHOS_OPUS_MODEL", "publishers/anthropic/models/claude-opus-4-7")
+OPUS_MODEL = os.environ.get("MYTHOS_OPUS_MODEL", "claude-opus-4-7")
 FINDER_MODEL = os.environ.get("MYTHOS_FINDER_MODEL", OPUS_MODEL)
 
 

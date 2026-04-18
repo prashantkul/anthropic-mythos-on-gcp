@@ -1,5 +1,6 @@
 """Mythos Finder agent: discovers vulnerabilities and crafts PoC exploits."""
 from google.adk.agents import LlmAgent
+from google.adk.models.anthropic_llm import Claude
 from google.genai import types
 
 from ..tools.sandbox_tools import FINDER_TOOLS
@@ -39,7 +40,7 @@ carefully, understand the data flow, and craft targeted inputs.
 def create(model: str) -> LlmAgent:
     return LlmAgent(
         name="mythos_finder",
-        model=model,
+        model=Claude(model=model),
         instruction=FINDER_INSTRUCTION,
         tools=FINDER_TOOLS,
         generate_content_config=types.GenerateContentConfig(temperature=0.2),

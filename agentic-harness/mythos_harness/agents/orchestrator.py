@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from google.adk.agents import LlmAgent
+from google.adk.models.anthropic_llm import Claude
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -261,7 +262,7 @@ def create(harness_config: HarnessConfig, target: TargetConfig) -> LlmAgent:
     tools = _create_tools(harness_config, target)
     return LlmAgent(
         name="opus_orchestrator",
-        model=harness_config.models.orchestrator,
+        model=Claude(model=harness_config.models.orchestrator),
         instruction=ORCHESTRATOR_INSTRUCTION,
         tools=tools,
         generate_content_config=types.GenerateContentConfig(temperature=0.1),
