@@ -30,6 +30,38 @@ C_RED = "\033[31m"
 C_DIM = "\033[2m"
 C_BOLD = "\033[1m"
 
+# Token tracking
+_token_counts: dict[str, dict[str, int]] = {}
+
+
+def _track_tokens(event, agent_name: str = None):
+    """Extract and accumulate token counts from an event."""
+    usage = getattr(event, 'usage_metadata', None)
+    if not usage:
+        return
+    author = agent_name or getattr(event, 'author', 'unknown')
+    inp = getattr(usage, 'prompt_token_count', 0) or 0
+    out = getattr(usage, 'candidates_token_count', 0) or 0
+    if author not in _token_counts:
+        _token_counts[author] = {"input": 0, "output": 0}
+    _token_counts[author]["input"] += inp
+    _token_counts[author]["output"] += out
+
+
+def print_token_summary():
+    """Print token usage table."""
+    if not _token_counts:
+        return
+    print(f"\n{C_BOLD}Token Usage{C_RESET}")
+    total_in = 0
+    total_out = 0
+    for name, counts in sorted(_token_counts.items()):
+        inp, out = counts["input"], counts["output"]
+        total_in += inp
+        total_out += out
+        print(f"  {name:35s}  {inp:>8,} in  {out:>8,} out  {inp+out:>8,} total")
+    print(f"  {C_BOLD}{'TOTAL':35s}  {total_in:>8,} in  {total_out:>8,} out  {total_in+total_out:>8,} total{C_RESET}")
+
 
 async def _run_single_agent(agent: Agent, prompt: str, plugins: list | None = None) -> str:
     """Run a single agent and collect its text output."""
@@ -47,6 +79,7 @@ async def _run_single_agent(agent: Agent, prompt: str, plugins: list | None = No
     async for event in runner.run_async(
         new_message=content, user_id="harness", session_id=sid
     ):
+        _track_tokens(event, agent.name)
         if event.content and event.content.parts:
             for part in event.content.parts:
                 if part.text:
@@ -69,6 +102,7 @@ async def _run_workflow(workflow_agent, prompt: str, plugins: list | None = None
     async for event in runner.run_async(
         new_message=content, user_id="harness", session_id="workflow"
     ):
+        _track_tokens(event)
         author = getattr(event, 'author', 'unknown')
         if event.content and event.content.parts:
             for part in event.content.parts:
@@ -224,4 +258,5 @@ async def run_parallel_assessment(
         sandbox.destroy(ac)
         print(f"  {C_DIM}[analyst_{i}] Sandbox destroyed{C_RESET}")
 
+    print_token_summary()
     print(f"\n{C_BOLD}Assessment complete. {len(findings)} reports in {run_dir}{C_RESET}")
