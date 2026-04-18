@@ -9,6 +9,7 @@ SANDBOX_MEMORY = os.environ.get("MYTHOS_SANDBOX_MEMORY", "8g")
 SANDBOX_NETWORK = "none"
 
 OPUS_MODEL = os.environ.get("MYTHOS_OPUS_MODEL", "claude-opus-4-7")
+SONNET_MODEL = os.environ.get("MYTHOS_SONNET_MODEL", "claude-sonnet-4-6")
 FINDER_MODEL = os.environ.get("MYTHOS_FINDER_MODEL", OPUS_MODEL)
 
 
@@ -17,7 +18,7 @@ class ModelConfig:
     orchestrator: str = OPUS_MODEL
     finder: str = FINDER_MODEL
     verifier: str = OPUS_MODEL
-    analyst: str = OPUS_MODEL
+    analyst: str = SONNET_MODEL
 
 
 @dataclass(frozen=True)
