@@ -238,7 +238,8 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             severity: One of: critical, high, medium, low, info.
         """
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{severity}_{title}.md"
+        safe_title = "".join(c if c.isalnum() or c in "-_ .()" else "_" for c in title)[:100]
+        filename = f"{timestamp}_{severity}_{safe_title}.md"
         report_dir = os.path.join(harness_config.results_dir, target.name)
         os.makedirs(report_dir, exist_ok=True)
         path = os.path.join(report_dir, filename)
