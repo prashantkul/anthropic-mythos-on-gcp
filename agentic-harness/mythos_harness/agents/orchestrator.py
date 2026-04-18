@@ -214,7 +214,17 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             )
             print(f"  [harness] Running analyst agent...")
             result = _run_sub_agent(_analyst_agent, prompt)
-            return result
+
+            report_dir = os.path.join(harness_config.results_dir, target.name)
+            os.makedirs(report_dir, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            safe_type = crash_type.replace(" ", "_").replace("/", "_")
+            path = os.path.join(report_dir, f"{timestamp}_{safe_type}_{run_id}.md")
+            with open(path, "w") as f:
+                f.write(result)
+            print(f"  [harness] Report auto-saved: {path}")
+
+            return f"Report saved to {path}. Continue to next focus area."
         finally:
             sandbox.destroy(container_name)
             print(f"  [harness] Analyst sandbox destroyed")
