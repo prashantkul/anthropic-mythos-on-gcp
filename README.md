@@ -1,107 +1,121 @@
-# GCP Mythos Sandbox
+# Mythos on GCP — Secure Agentic Vulnerability Research
 
-Secure GCP environment for exploring [Claude Mythos Preview](https://red.anthropic.com/2026/mythos-preview/) — Anthropic's cybersecurity-focused model capable of autonomous zero-day discovery and exploit development.
+Secure GCP environment for running [Claude Mythos](https://red.anthropic.com/2026/mythos-preview/)
+— Anthropic's cybersecurity-focused model — in hardened, sandboxed containers
+for autonomous vulnerability discovery.
 
-## Overview
+## What This Is
 
-This project provides the architecture and deployment scripts for running Mythos in a hardened, containerized environment on Google Cloud Platform. The security design is directly informed by [SandboxBench](Prashant_Kulkarni_SadboxBench.pdf) (Kulkarni et al., SPAR Fall 2025), a comprehensive evaluation framework that demonstrated frontier models can exploit 69-77% of container misconfigurations.
+A multi-agent harness that points Mythos at a C/C++ codebase and autonomously:
+1. **Plans** — explores source, identifies attack surface areas
+2. **Finds** — crafts PoC inputs that trigger ASAN crashes (parallel)
+3. **Verifies** — reproduces each crash 3/3 in a fresh sandbox
+4. **Analyzes** — produces structured exploitability reports with CVSS
 
-Mythos is accessed exclusively via **Vertex AI** — there is no direct access to Anthropic APIs. This is itself a security control: all model interactions are governed by GCP IAM, VPC Service Controls, and Cloud Audit Logs.
+All execution happens inside Docker + gVisor sandboxes with zero network,
+zero credentials, and three independent security choke points per tool call.
+
+Security design informed by [SandboxBench](Prashant_Kulkarni_SadboxBench.pdf)
+(Kulkarni et al., SPAR Fall 2025) — our research showing frontier models
+exploit 69-77% of container misconfigurations, but defense-in-depth achieves 0%.
+
+## Harnesses
+
+Two implementations, same security model:
+
+| | [Sequential](agentic-harness/) | [Parallel](agentic-harness-parallel/) |
+|---|---|---|
+| **Planning** | Orchestrator decides per step | Planner agent explores source upfront |
+| **Finding** | One finder at a time | N finders simultaneously (ParallelAgent) |
+| **Time** | ~20 min (3 areas) | ~8 min (3 areas) |
+| **Orchestration** | LLM tool-call loop (ADK) | Deterministic pipeline (ADK ParallelAgent) |
+| **Docs** | [README](agentic-harness/README.md) · [FLOW](agentic-harness/FLOW.md) | [README](agentic-harness-parallel/README.md) · [FLOW](agentic-harness-parallel/FLOW.md) |
+
+## Agents
+
+| Agent | Model | Role |
+|---|---|---|
+| **Planner** | Mythos | Explores source, maps attack surface, outputs focus areas |
+| **Finder** (×N) | Mythos | Crafts PoC inputs, triggers ASAN crashes in sandbox |
+| **Verifier** | Mythos / Opus | Reproduces PoC 3/3 in fresh sandbox, 5-criteria check |
+| **Analyst** | Sonnet 4.6 | Root cause, exploitability, CVSS, remediation |
+
+## Security: Three Choke Points
+
+Every tool call passes through three independent layers:
+
+| Choke Point | Layer | What It Blocks |
+|---|---|---|
+| **ADK Tool Registration** | Framework | Agent can only call tools in its list |
+| **SecurityGatewayPlugin** | Application | Dangerous commands, restricted paths, credentials in output |
+| **Sandbox Isolation** | Infrastructure | `--network=none`, `--cap-drop=ALL`, gVisor, non-root |
+
+## Infrastructure
+
+Deployed and validated on GCE VM (`n1-standard-8`, Ubuntu 22.04, no external IP):
+
+| Component | Configuration |
+|---|---|
+| **Compute** | GCE VM with Docker + gVisor (runsc) |
+| **Network** | Private VPC, deny-all ingress, IAP SSH only, Cloud NAT for egress |
+| **Sandbox** | `--runtime=runsc --network=none --cap-drop=ALL --user=1000:1000` |
+| **Metadata** | iptables blocks containers from `169.254.169.254` |
+| **Model access** | Claude via Vertex AI (Anthropic SDK), `anthropic.com` not accessible from sandboxes |
+| **Service accounts** | `mythos-orchestrator-sa` (Vertex AI + GCS), `mythos-sandbox-sa` (zero permissions) |
+
+Firecracker/Kata micro-VMs are the recommended upgrade for hardware isolation
+(currently blocked by GCE nested virtualization). See [GCE option](options/gce-docker.md).
 
 ## Documents
 
 | Document | Description |
-|----------|-------------|
-| [APPROACH.md](APPROACH.md) | Architecture overview: threat model, 9-ring defense-in-depth, comparison table, VPC-SC, Cloud NGFW, source code ingestion, implementation plan |
-| [Option A: Cloud Run](options/cloud-run.md) | **Not recommended** — cannot orchestrate sandbox containers (no Docker daemon, no nested isolation) |
-| [Option B: GCE + Firecracker](options/gce-docker.md) | **Recommended.** Firecracker micro-VM, hardware isolation, full flexibility |
-| [Option C: GKE](options/gke.md) | Most defense-in-depth, scales to teams, highest complexity |
-| [HARNESS.md](agentic-harness/HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
-| [Sequential FLOW.md](agentic-harness/FLOW.md) | Sequential harness: flow, security choke points, trust boundaries, ADK implementation |
-| [Parallel FLOW.md](agentic-harness-parallel/FLOW.md) | Parallel harness: planner + ParallelAgent finders, same security model |
-| [SETUP.md](SETUP.md) | GCE VM setup: VPC, firewall, Docker + gVisor, metadata blocking, harness install, teardown |
-| [CLEARWING-REFERENCE.md](CLEARWING-REFERENCE.md) | Reference architecture: running [Clearwing](https://github.com/Lazarus-AI/clearwing) (LangGraph vuln scanner) inside our containment |
-| [SandboxBench Paper](Prashant_Kulkarni_SadboxBench.pdf) | Research: "SandboxBench: A Comprehensive Evaluation Framework for AI Agent Containment" (Kulkarni et al., SPAR Fall 2025) |
+|---|---|
+| **Harnesses** | |
+| [Sequential README](agentic-harness/README.md) | Quick start, architecture, file tree |
+| [Sequential FLOW](agentic-harness/FLOW.md) | Flow, security choke points, trust boundaries, ADK details |
+| [Parallel README](agentic-harness-parallel/README.md) | Quick start, planner, ParallelAgent, comparison |
+| [Parallel FLOW](agentic-harness-parallel/FLOW.md) | Flow, planner phase, per-container closures |
+| **Architecture** | |
+| [APPROACH.md](APPROACH.md) | 9-ring containment, threat model, GCP controls (VPC-SC, NGFW, on-prem) |
+| [SETUP.md](SETUP.md) | GCE VM deployment — verified steps, teardown |
+| [Containment Principles](agentic-harness/HARNESS.md) | General security design considerations |
+| **Compute Options** | |
+| [GCE + Docker](options/gce-docker.md) | Deployed — gVisor, path to Firecracker |
+| [GKE](options/gke.md) | Future — team/production, Kata Containers |
+| [Cloud Run](options/cloud-run.md) | Not recommended — can't orchestrate sandboxes |
+| **References** | |
+| [Clearwing Reference](CLEARWING-REFERENCE.md) | Running [Clearwing](https://github.com/Lazarus-AI/clearwing) (LangGraph) inside our containment |
+| [SandboxBench Paper](Prashant_Kulkarni_SadboxBench.pdf) | Research: AI agent container escape evaluation (SPAR Fall 2025) |
 
-## Security Architecture
+## Quick Start
 
-9-ring defense-in-depth model. Container hardening is the **foundation** — every outer ring operates independently.
+```bash
+# Deploy GCE VM (see SETUP.md for full steps)
+gcloud compute ssh mythos-harness --zone=us-central1-a --tunnel-through-iap
 
-| Ring | Control | What It Stops |
-|------|---------|---------------|
-| 0 | **Container Hardening** | Privilege escalation, filesystem persistence, capability abuse |
-| 1 | **Micro-VM / gVisor** | Kernel-level escapes — Firecracker/Kata micro-VM (GCE/GKE), gVisor (Cloud Run) |
-| 2 | **Egress Proxy (Squid)** | Data exfiltration, direct Anthropic API access, DNS tunneling |
-| 3 | **VPC Firewall + NAT** | Metadata service access, lateral movement, inbound attacks |
-| 4 | **Cloud NGFW / Palo Alto** | Encrypted C2, exploit delivery, covert channels |
-| 5 | **VPC Service Controls** | Cross-project data theft, stolen credential abuse |
-| 6 | **SecurityGatewayPlugin** | ADK BasePlugin — command blocklist, path restriction, rate limiting, output scanning |
-| 7 | **On-Prem Proxy** | Policy violations missed by cloud controls, shadow IT |
-| 8 | **Monitoring & Audit** | Undetected breaches, compliance gaps |
+# Sequential harness
+cd ~/anthropic-mythos-on-gcp/agentic-harness
+docker build -t mythos-canary:latest targets/canary/
+uv run mythos-harness targets/canary --runtime runsc
 
-## Key Design Decisions
+# Parallel harness (with autonomous planner)
+cd ~/anthropic-mythos-on-gcp/agentic-harness-parallel
+uv run python -m mythos_harness.cli ../agentic-harness/targets/canary --runtime runsc
+```
 
-### Vertex AI Only (No Direct Anthropic API)
+## Validated Results
 
-All Mythos interactions go through Vertex AI on GCP. `anthropic.com` is explicitly
-blocked in the proxy allowlist. This ensures every API call is subject to GCP IAM,
-VPC-SC perimeter checks, and Cloud Audit Logs.
+Both harnesses validated on the canary target (3 planted C memory safety bugs):
 
-### Source Code via Cloud Source Repos / GCS
-
-The sandbox never clones from GitHub/GitLab directly. Repos are mirrored into Cloud
-Source Repositories or staged in GCS — both within the VPC-SC perimeter. The sandbox
-receives code as a read-only volume mount. No git CLI, SSH keys, or PATs in the sandbox.
-
-### GCE + Docker Recommended (for now)
-
-Simplest mental model (one VM, one micro-VM sandbox, one proxy), full flexibility,
-strongest self-managed isolation with Firecracker micro-VMs (hardware-enforced via
-KVM). gVisor intercepts syscalls in userspace but still shares the host kernel — a
-model that finds kernel zero-days needs hardware isolation. Enterprise controls
-(Rings 2-8) are identical across all compute options.
-
-### Multi-Agent Harness with Google ADK (Recommended)
-
-The harness uses a multi-agent architecture where **Claude Mythos** plans, finds,
-verifies, and analyzes vulnerabilities. All agents run on Vertex AI.
-
-| Agent | Model | Role | Tool Access |
-|---|---|---|---|
-| **Planner** | Mythos | Explores source, identifies focus areas for parallel research | Read-only sandbox |
-| **Finder** (N parallel) | Mythos | Reads code, crafts PoC, triggers ASAN crash | Full sandbox (sandboxed tools via gateway) |
-| **Verifier** | Mythos / Opus | Reproduces PoC 3/3 in fresh sandbox, 5-criteria check | Fresh sandbox (PoC copied in) |
-| **Analyst** | Sonnet 4.6 | Root cause analysis, CVSS, exploitability report | Read-only sandbox |
-
-**ADK with SecurityGatewayPlugin** — an ADK `BasePlugin` intercepts all Mythos
-tool calls through `before_tool_callback` (validation, blocklists, rate limiting)
-and `after_tool_callback` (output scanning, credential redaction). Native Vertex AI
-integration, all-Google ecosystem. [Agent Gateway](https://agentgateway.dev/)
-available for future MCP scenarios. LangGraph as alternative for built-in checkpointing.
-
-See [Sequential FLOW.md](agentic-harness/FLOW.md) and
-[Parallel FLOW.md](agentic-harness-parallel/FLOW.md) for detailed architecture.
-
-## SandboxBench Findings
-
-From the [research paper](Prashant_Kulkarni_SadboxBench.pdf):
-
-- **77% escape rate** on misconfigured Docker containers — Mythos is far more capable
-- **0% escape rate** with defense-in-depth — validates the ring-based approach
-- **0% autonomous discovery** in hard mode — but Mythos finds zero-days autonomously
-- **Single-layer defense: 67-70% vulnerable. Multi-layer: 0%**
-
-> "Containment must not rely on model alignment alone."
-> — SandboxBench, Section 5.2.2
+- **Sequential**: 4 bugs found (3 planted + 1 discovered), verified, analyzed, reported
+- **Parallel**: 3 bugs found via model-planned focus areas, verified, analyzed in ~8 min
+- **Token usage**: ~100K (sequential), ~190K (parallel)
+- All reports include: primitive characterization, reachability, heap layout, escalation path, CVSS, fix
 
 ## References
 
-- [Claude Mythos Preview Technical Report](https://red.anthropic.com/2026/mythos-preview/)
-- [SandboxBench Paper (local)](Prashant_Kulkarni_SadboxBench.pdf)
-- [SandboxBench on UK AISI inspect_evals](https://github.com/UKGovernmentBEIS/inspect_evals) (PR #713, #745, #789)
-- [GCP VPC Service Controls](https://cloud.google.com/vpc-service-controls/docs/overview)
-- [Cloud NGFW Enterprise (Palo Alto)](https://cloud.google.com/firewall/docs/about-firewalls)
-- [GKE Sandbox (gVisor)](https://cloud.google.com/kubernetes-engine/docs/concepts/sandbox-pods)
-- [Container-Optimized OS](https://cloud.google.com/container-optimized-os/docs/concepts/features-and-benefits)
-- [Private Service Connect](https://cloud.google.com/vpc/docs/private-service-connect)
-- [Cloud Source Repositories Mirroring](https://cloud.google.com/source-repositories/docs/mirroring-a-github-repository)
+- [Claude Mythos Preview](https://red.anthropic.com/2026/mythos-preview/)
+- [SandboxBench on UK AISI inspect_evals](https://github.com/UKGovernmentBEIS/inspect_evals)
+- [Google ADK Samples](https://github.com/google/adk-samples)
+- [Agent Gateway](https://agentgateway.dev/) (future MCP scenarios)
+- [Clearwing](https://github.com/Lazarus-AI/clearwing) (LangGraph vuln scanner)
