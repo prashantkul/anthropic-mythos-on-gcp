@@ -17,7 +17,7 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | [Option B: GCE + Firecracker](options/gce-docker.md) | **Recommended.** Firecracker micro-VM, hardware isolation, full flexibility |
 | [Option C: GKE](options/gke.md) | Most defense-in-depth, scales to teams, highest complexity |
 | [HARNESS.md](agentic-harness/HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
-| [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) | Multi-agent harness architecture: Opus orchestrator + Mythos worker, ADK vs LangGraph implementations, framework comparison |
+| [HARNESS-DESIGN.md](agentic-harness/HARNESS-DESIGN.md) | Multi-agent harness architecture: Mythos orchestrator + finder + verifier + analyst, ADK framework, security gateway |
 | [SETUP.md](SETUP.md) | GCE VM setup: VPC, firewall, Docker + gVisor, metadata blocking, harness install, teardown |
 | [SandboxBench Paper](Prashant_Kulkarni_SadboxBench.pdf) | Research: "SandboxBench: A Comprehensive Evaluation Framework for AI Agent Containment" (Kulkarni et al., SPAR Fall 2025) |
 
@@ -61,13 +61,15 @@ model that finds kernel zero-days needs hardware isolation. Enterprise controls
 
 ### Multi-Agent Harness with Google ADK (Recommended)
 
-The harness uses a multi-agent architecture where **Claude Opus** orchestrates and
-**Claude Mythos** executes vulnerability research. Both run on Vertex AI.
+The harness uses a multi-agent architecture where **Claude Mythos** plans, finds,
+verifies, and analyzes vulnerabilities. All agents run on Vertex AI.
 
-| Agent | Role | Tool Access |
-|---|---|---|
-| **Opus** (Orchestrator) | Plans investigation, delegates tasks, reviews findings, writes reports | GCS, BigQuery, delegate-to-Mythos. No sandbox access |
-| **Mythos** (Worker) | Reads code, runs commands, builds exploits | Sandbox only. All tools execute via `docker exec` through Agent Gateway |
+| Agent | Model | Role | Tool Access |
+|---|---|---|---|
+| **Planner** | Mythos | Explores source, identifies focus areas for parallel research | Read-only sandbox |
+| **Finder** (N parallel) | Mythos | Reads code, crafts PoC, triggers ASAN crash | Full sandbox (sandboxed tools via gateway) |
+| **Verifier** | Mythos / Opus | Reproduces PoC 3/3 in fresh sandbox, 5-criteria check | Fresh sandbox (PoC copied in) |
+| **Analyst** | Sonnet 4.6 | Root cause analysis, CVSS, exploitability report | Read-only sandbox |
 
 **ADK with SecurityGatewayPlugin** — an ADK `BasePlugin` intercepts all Mythos
 tool calls through `before_tool_callback` (validation, blocklists, rate limiting)

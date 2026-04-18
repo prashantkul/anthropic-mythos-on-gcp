@@ -15,7 +15,7 @@ graph TB
     R[Researcher] -->|task + focus areas| OPUS
 
     subgraph "Host VM — has GCP credentials"
-        OPUS["Opus Orchestrator\n(claude-opus-4-7)\nPlans, delegates, reviews"]
+        OPUS["Mythos Orchestrator\n(Mythos / Opus fallback)\nPlans, delegates, reviews"]
     end
 
     OPUS -->|run_finder| FINDER
@@ -23,11 +23,11 @@ graph TB
     OPUS -->|run_analyst| ANALYST
 
     subgraph "Sandbox A — no credentials, no network"
-        FINDER["Mythos Finder\n(claude-opus-4-7)\nReads code, crafts PoC, runs binary"]
+        FINDER["Mythos Finder\n(Mythos)\nReads code, crafts PoC, runs binary"]
     end
 
     subgraph "Sandbox B — no credentials, no network"
-        VERIFIER["Verifier\n(claude-opus-4-7)\nReproduces PoC 3/3, 5 criteria"]
+        VERIFIER["Verifier\n(Mythos / Opus)\nReproduces PoC 3/3, 5 criteria"]
     end
 
     subgraph "Sandbox C — no credentials, no network, read-only"
@@ -80,7 +80,7 @@ graph LR
 ```mermaid
 sequenceDiagram
     participant R as Researcher
-    participant O as Opus (Host)
+    participant O as Mythos (Host)
     participant F as Finder (Sandbox A)
     participant V as Verifier (Sandbox B)
     participant A as Analyst (Sandbox C)
@@ -211,7 +211,7 @@ graph LR
 graph TB
     CALL[Tool Call from Agent] --> CHECK_AGENT{Agent is\nfinder or verifier?}
 
-    CHECK_AGENT -->|No — Opus/Analyst| ALLOW[Allow — no sandbox rules]
+    CHECK_AGENT -->|No — orchestrator/analyst| ALLOW[Allow — no sandbox rules]
     CHECK_AGENT -->|Yes| CHECK_RATE{Rate limit\nexceeded?}
 
     CHECK_RATE -->|Yes| DENY1[DENY: rate limit]
@@ -259,7 +259,7 @@ graph TB
 
         NAT[Cloud NAT — egress only]
         SA[mythos-orchestrator-sa\nroles: aiplatform.user\nstorage.objectAdmin\nlogging.logWriter]
-        VTXAI[Vertex AI\nClaude Opus 4.7\nClaude Sonnet 4.6]
+        VTXAI[Vertex AI\nClaude Mythos\nClaude Sonnet 4.6]
     end
 
     HARNESS -->|Private Google Access| VTXAI

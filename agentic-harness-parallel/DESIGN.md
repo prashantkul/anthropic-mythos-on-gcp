@@ -7,7 +7,7 @@ Exploration of running multiple finder agents in parallel using ADK's
 
 ```mermaid
 graph LR
-    O[Opus] -->|1| F1[Finder area 1]
+    O[Mythos] -->|1| F1[Finder area 1]
     F1 -->|2| V1[Verifier]
     V1 -->|3| A1[Analyst]
     A1 -->|4| F2[Finder area 2]
@@ -93,10 +93,10 @@ workflow = WorkflowAgent(
 across each area, `collect_node` gathers results. **Dynamic** — N is determined
 at runtime.
 
-### Option C: Hybrid — Opus plans, then dynamic ParallelAgent
+### Option C: Hybrid — Mythos plans, then dynamic ParallelAgent
 
 ```python
-# Step 1: Opus plans focus areas (tool call)
+# Step 1: Mythos plans focus areas (tool call)
 focus_areas = run_planner(target)  # returns ["parsing", "alloc", "error"]
 
 # Step 2: Dynamically construct ParallelAgent
@@ -167,7 +167,7 @@ finder gets tools that are bound to its own container via closure.
 ```mermaid
 graph TB
     subgraph "Phase 1 — Plan"
-        CLI[CLI] -->|target + config| PLAN[Planner Agent\nOpus identifies focus areas]
+        CLI[CLI] -->|target + config| PLAN[Planner Agent\nMythos identifies focus areas]
     end
 
     subgraph "Phase 2 — Find (Parallel)"
@@ -208,11 +208,11 @@ graph TB
 
 | Aspect | Sequential | Parallel |
 |---|---|---|
-| Finder execution | One at a time, Opus decides next | All simultaneously |
+| Finder execution | One at a time, orchestrator decides next | All simultaneously |
 | Container state | Global `_CURRENT_CONTAINER` | Per-finder closure |
 | PoC bytes | Single `_poc_bytes_store` | Per-finder, passed to verifier |
-| Orchestration | Opus LLM decides flow at each step | WorkflowAgent / ParallelAgent — deterministic |
-| Known bugs tracking | Opus tells each finder what's found | Shared `found_bugs.jsonl` (needs locking) |
+| Orchestration | Mythos LLM decides flow at each step | WorkflowAgent / ParallelAgent — deterministic |
+| Known bugs tracking | Orchestrator tells each finder what's found | Shared `found_bugs.jsonl` (needs locking) |
 | Time (4 areas) | ~20 min | ~8 min (finders parallel, verify/analyze sequential) |
 | Token cost | Same | Same (same work, just concurrent) |
 | Complexity | Simple (tool functions) | More complex (workflow agents, per-finder tools) |

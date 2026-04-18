@@ -91,11 +91,11 @@ uv run mythos-harness targets/canary --runtime runsc
 ```
 
 The harness will:
-1. Opus plans investigation, delegates to Mythos finder
+1. Planner explores source, identifies focus areas
 2. Finder explores source, crafts PoC, lands ASAN crash
 3. Verifier reproduces in fresh sandbox (3/3, 5 criteria)
 4. Analyst produces exploitability report (primitive, reachability, CVSS)
-5. Opus stores final report to `results/canary/`
+5. Report auto-stored to `results/canary/`
 
 ## Expected Outcomes
 
