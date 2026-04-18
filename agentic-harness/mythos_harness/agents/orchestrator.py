@@ -23,6 +23,7 @@ import uuid
 
 from ..agents import analyst, finder, verifier
 from ..config import HarnessConfig, TargetConfig
+from ..plugins.security_gateway import SecurityGatewayPlugin
 from ..sandbox import manager as sandbox
 from ..tools.sandbox_tools import set_container
 
@@ -53,8 +54,10 @@ def _run_sub_agent(agent: Agent, prompt: str) -> str:
         await session_service.create_session(
             app_name="mythos", user_id="harness", session_id="sub_session"
         )
+        gateway = SecurityGatewayPlugin()
         runner = Runner(
-            agent=agent, app_name="mythos", session_service=session_service
+            agent=agent, app_name="mythos", session_service=session_service,
+            plugins=[gateway],
         )
         content = types.Content(role="user", parts=[types.Part(text=prompt)])
         result_text = ""
