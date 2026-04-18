@@ -80,13 +80,17 @@ def read_file(container: str, path: str) -> bytes:
 
 
 def write_file(container: str, path: str, content: bytes) -> None:
-    with tempfile.NamedTemporaryFile(delete=False) as f:
-        f.write(content)
-        tmp = f.name
-    try:
-        subprocess.run(["docker", "cp", tmp, f"{container}:{path}"], check=True, capture_output=True)
-    finally:
-        os.unlink(tmp)
+    """Write bytes into a container via docker exec stdin pipe.
+
+    docker cp doesn't work reliably with gVisor containers.
+    """
+    r = subprocess.run(
+        ["docker", "exec", "-i", container, "sh", "-c", f"cat > {path}"],
+        input=content,
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"write_file failed: {r.stderr.decode()}")
 
 
 def destroy(container: str) -> None:
