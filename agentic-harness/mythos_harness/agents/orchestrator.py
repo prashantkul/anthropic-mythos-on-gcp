@@ -7,8 +7,8 @@ unlike the sub_agents/transfer_to_agent pattern which requires Gemini.
 from __future__ import annotations
 
 import asyncio
-import base64
 import os
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -17,15 +17,16 @@ from google.adk.models.anthropic_llm import Claude
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from rich.console import Console
+from rich.panel import Panel
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
-
-import uuid
 
 from ..agents import analyst, finder, verifier
 from ..config import HarnessConfig, TargetConfig
 from ..sandbox import manager as sandbox
 from ..tools.sandbox_tools import set_container
 
+console = Console()
 
 
 @retry(
@@ -34,11 +35,6 @@ from ..tools.sandbox_tools import set_container
     stop=stop_after_attempt(5),
 )
 def _run_sub_agent(agent: Agent, prompt: str) -> str:
-    """Run a sub-agent in a fresh Runner in a separate thread.
-
-    Matches the ai-security-agent execute_sub_agent pattern:
-    fresh session per call, ThreadPoolExecutor for isolation.
-    """
     async def _run():
         session_service = InMemorySessionService()
         await session_service.create_session(
@@ -98,7 +94,7 @@ You are an orchestrator coordinating vulnerability research via specialist tools
 """
 
 
-def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
+def _create_tools(harness_config: HarnessConfig, target: TargetConfig, run_dir: str):
     _finder_agent = finder.create(harness_config.models.finder)
     _verifier_agent = verifier.create(harness_config.models.verifier)
     _analyst_agent = analyst.create(harness_config.models.analyst)
@@ -113,13 +109,21 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
         """
         run_id = uuid.uuid4().hex[:8]
         container_name = f"find_{target.name}_{run_id}"
-        print(f"\n  [harness] Creating finder sandbox: {container_name}")
-        sandbox.create(
+
+        name, docker_cmd = sandbox.create(
             target.image_tag,
             name=container_name,
             runtime=harness_config.sandbox_runtime,
             read_only=False,
         )
+        console.print(Panel(
+            f"[bold]Container:[/bold] {name}\n"
+            f"[bold]Verify:[/bold] docker exec {name} ls /target/\n"
+            f"[bold]Shell:[/bold] docker exec -it {name} bash\n"
+            f"[dim]{docker_cmd}[/dim]",
+            title="[green]Finder Sandbox Created[/green]",
+            border_style="green",
+        ))
         set_container(container_name)
 
         try:
@@ -128,20 +132,20 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Source root: {target.source_root}\n"
                 f"Binary path: {target.binary_path}\n"
             )
-            print(f"  [harness] Running finder agent...")
+            console.print("[cyan]  Running finder agent...[/cyan]")
             result = _run_sub_agent(_finder_agent, prompt)
 
             poc_bytes = sandbox.read_file(container_name, "/tmp/poc.bin")
             if poc_bytes:
                 _poc_bytes_store["data"] = poc_bytes
-                print(f"  [harness] PoC extracted: {len(poc_bytes)} bytes")
+                console.print(f"[green]  PoC extracted: {len(poc_bytes)} bytes[/green]")
             else:
-                print(f"  [harness] No PoC at /tmp/poc.bin")
+                console.print("[yellow]  No PoC at /tmp/poc.bin[/yellow]")
 
             return result
         finally:
             sandbox.destroy(container_name)
-            print(f"  [harness] Finder sandbox destroyed")
+            console.print(f"[dim]  Sandbox {container_name} destroyed[/dim]")
 
     def run_verifier(reproduction_command: str, crash_type: str) -> str:
         """Verify a crash by reproducing the PoC in a fresh sandbox.
@@ -156,30 +160,36 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
 
         run_id = uuid.uuid4().hex[:8]
         container_name = f"grade_{target.name}_{run_id}"
-        print(f"\n  [harness] Creating verifier sandbox: {container_name}")
-        sandbox.create(
+
+        name, docker_cmd = sandbox.create(
             target.image_tag,
             name=container_name,
             runtime=harness_config.sandbox_runtime,
             read_only=False,
         )
         sandbox.write_file(container_name, "/tmp/poc.bin", poc_bytes)
+        console.print(Panel(
+            f"[bold]Container:[/bold] {name}\n"
+            f"[bold]PoC:[/bold] {len(poc_bytes)} bytes copied to /tmp/poc.bin\n"
+            f"[bold]Verify:[/bold] docker exec {name} xxd /tmp/poc.bin\n"
+            f"[dim]{docker_cmd}[/dim]",
+            title="[yellow]Verifier Sandbox Created[/yellow]",
+            border_style="yellow",
+        ))
         set_container(container_name)
 
         try:
-            adapted_cmd = reproduction_command
             prompt = (
                 f"Verify this crash in your fresh sandbox.\n\n"
                 f"PoC file: /tmp/poc.bin ({len(poc_bytes)} bytes)\n"
-                f"Reproduction command: {adapted_cmd}\n"
+                f"Reproduction command: {reproduction_command}\n"
                 f"Expected crash type: {crash_type}\n"
             )
-            print(f"  [harness] Running verifier agent...")
-            result = _run_sub_agent(_verifier_agent, prompt)
-            return result
+            console.print("[cyan]  Running verifier agent...[/cyan]")
+            return _run_sub_agent(_verifier_agent, prompt)
         finally:
             sandbox.destroy(container_name)
-            print(f"  [harness] Verifier sandbox destroyed")
+            console.print(f"[dim]  Sandbox {container_name} destroyed[/dim]")
 
     def run_analyst(crash_type: str, crash_output: str,
                     reproduction_command: str, verification: str) -> str:
@@ -193,13 +203,20 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
         """
         run_id = uuid.uuid4().hex[:8]
         container_name = f"analyze_{target.name}_{run_id}"
-        print(f"\n  [harness] Creating analyst sandbox: {container_name}")
-        sandbox.create(
+
+        name, docker_cmd = sandbox.create(
             target.image_tag,
             name=container_name,
             runtime=harness_config.sandbox_runtime,
             read_only=True,
         )
+        console.print(Panel(
+            f"[bold]Container:[/bold] {name} [dim](read-only)[/dim]\n"
+            f"[bold]Verify:[/bold] docker exec {name} ls /target/src/\n"
+            f"[dim]{docker_cmd}[/dim]",
+            title="[blue]Analyst Sandbox Created[/blue]",
+            border_style="blue",
+        ))
         set_container(container_name)
 
         try:
@@ -211,12 +228,11 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Verification:\n{verification[:2000]}\n\n"
                 f"Source code is at /target/ (read-only)."
             )
-            print(f"  [harness] Running analyst agent...")
-            result = _run_sub_agent(_analyst_agent, prompt)
-            return result
+            console.print("[cyan]  Running analyst agent...[/cyan]")
+            return _run_sub_agent(_analyst_agent, prompt)
         finally:
             sandbox.destroy(container_name)
-            print(f"  [harness] Analyst sandbox destroyed")
+            console.print(f"[dim]  Sandbox {container_name} destroyed[/dim]")
 
     def store_report(title: str, content: str, severity: str = "medium") -> str:
         """Store a vulnerability report.
@@ -226,21 +242,29 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             content: Full report content in markdown.
             severity: One of: critical, high, medium, low, info.
         """
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{severity}_{title}.md"
-        report_dir = os.path.join(harness_config.results_dir, target.name)
-        os.makedirs(report_dir, exist_ok=True)
-        path = os.path.join(report_dir, filename)
+        safe_title = "".join(c if c.isalnum() or c in "-_ " else "_" for c in title)
+        filename = f"{severity}_{safe_title}.md"
+        path = os.path.join(run_dir, filename)
         with open(path, "w") as f:
             f.write(content)
-        print(f"\n  [harness] Report stored: {path}")
+
+        severity_colors = {
+            "critical": "red bold", "high": "red", "medium": "yellow",
+            "low": "green", "info": "blue",
+        }
+        style = severity_colors.get(severity, "white")
+        console.print(Panel(
+            f"[bold]{title}[/bold]\n{path}",
+            title=f"[{style}]Report Stored ({severity.upper()})[/{style}]",
+            border_style=style,
+        ))
         return f"Report stored at {path}"
 
     return [run_finder, run_verifier, run_analyst, store_report]
 
 
-def create(harness_config: HarnessConfig, target: TargetConfig) -> Agent:
-    tools = _create_tools(harness_config, target)
+def create(harness_config: HarnessConfig, target: TargetConfig, run_dir: str) -> Agent:
+    tools = _create_tools(harness_config, target, run_dir)
     return Agent(
         name="opus_orchestrator",
         model=Claude(model=harness_config.models.orchestrator),

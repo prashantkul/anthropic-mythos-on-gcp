@@ -1,13 +1,11 @@
 """Sandbox lifecycle: create, exec, read_file, write_file, destroy.
 
-Uses Docker CLI with configurable runtime (kata-fc for Firecracker micro-VMs,
-runsc for gVisor). Each sandbox gets --network none and a memory cap.
+Uses Docker CLI with configurable runtime (runsc for gVisor, kata-fc for
+Firecracker micro-VMs). Each sandbox gets --network none and a memory cap.
 """
 from __future__ import annotations
 
-import os
 import subprocess
-import tempfile
 
 from ..config import SANDBOX_MEMORY, SANDBOX_NETWORK, SANDBOX_RUNTIME
 
@@ -25,7 +23,8 @@ def create(
     network: str = SANDBOX_NETWORK,
     memory: str = SANDBOX_MEMORY,
     read_only: bool = True,
-) -> str:
+) -> tuple[str, str]:
+    """Create a sandbox container. Returns (name, docker_command_string)."""
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
     cmd = [
@@ -46,10 +45,12 @@ def create(
 
     cmd.extend([image_tag, "/bin/bash"])
 
+    docker_cmd_str = " ".join(cmd)
+
     r = subprocess.run(cmd, check=False, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"sandbox create failed (exit {r.returncode}): {r.stderr.strip()}")
-    return name
+    return name, docker_cmd_str
 
 
 def execute(
@@ -80,10 +81,7 @@ def read_file(container: str, path: str) -> bytes:
 
 
 def write_file(container: str, path: str, content: bytes) -> None:
-    """Write bytes into a container via docker exec stdin pipe.
-
-    docker cp doesn't work reliably with gVisor containers.
-    """
+    """Write bytes into a container via docker exec stdin pipe."""
     r = subprocess.run(
         ["docker", "exec", "-i", container, "sh", "-c", f"cat > {path}"],
         input=content,
