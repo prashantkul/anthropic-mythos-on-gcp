@@ -2,7 +2,7 @@ image_tag: "mythos-canary:latest"
 source_root: "/target/src"
 binary_path: "/target/bin/canary"
 focus_areas:
-  - "name parsing (parse_name)"
-  - "data parsing with size calculations (parse_data)"
-  - "entry processing error paths (process_entries)"
+  - "input parsing and field validation"
+  - "size calculations and memory allocation"
+  - "error handling paths"
 known_bugs: []
