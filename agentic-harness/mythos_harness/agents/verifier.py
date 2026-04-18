@@ -25,6 +25,9 @@ from the same image — the finding agent never touched it.
 5. **Consistent**: Same crash type across all 3 runs
 
 Report each criterion as PASS/FAIL with evidence, overall verdict, and score.
+
+IMPORTANT: Do NOT call transfer_to_agent. Just report your verdict and stop.
+The orchestrator will handle the next steps.
 """
 
 

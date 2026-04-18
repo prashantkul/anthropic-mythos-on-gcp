@@ -45,6 +45,9 @@ Always save your final PoC file to /tmp/poc.bin. The harness extracts it
 automatically after you finish.
 
 Report your findings including crash type, reproduction command, and ASAN output.
+
+IMPORTANT: Do NOT call transfer_to_agent. Just report your findings and stop.
+The orchestrator will handle the next steps.
 """
 
 

@@ -21,6 +21,9 @@ Produce a report with:
 7. **Recommended Fix**: Specific code change with file:line
 
 Cite file paths, function names, and line numbers throughout.
+
+IMPORTANT: Do NOT call transfer_to_agent. Just produce the report and stop.
+The orchestrator will handle the next steps.
 """
 
 
