@@ -69,11 +69,12 @@ async def run_assessment(
     total_output_tokens = 0
     agent_tokens: dict[str, dict[str, int]] = {}
 
-    async for event in runner.run_async(
+    try:
+      async for event in runner.run_async(
         new_message=content,
         user_id="researcher",
         session_id="assessment",
-    ):
+      ):
         author = getattr(event, 'author', None) or "unknown"
 
         # Track tokens
@@ -104,6 +105,11 @@ async def run_assessment(
                     if preview:
                         console.print(f"  [bold cyan][{author}][/bold cyan] {preview}")
                     result_text += part.text
+
+    except Exception as e:
+        console.print(f"\n[red bold]ERROR: {type(e).__name__}: {e}[/red bold]")
+        import traceback
+        traceback.print_exc()
 
     console.print(f"\n[dim]Session ended. Total events processed.[/dim]")
 
