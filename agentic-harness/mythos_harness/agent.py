@@ -17,4 +17,5 @@ _DEFAULT_TARGET = TargetConfig(
 root_agent = create_orchestrator(
     harness_config=HarnessConfig(),
     target=_DEFAULT_TARGET,
+    run_dir="results/default",
 )
