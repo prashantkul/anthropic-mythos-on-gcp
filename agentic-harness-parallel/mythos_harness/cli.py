@@ -56,11 +56,14 @@ def main():
     print(f"  Target:       {C_BOLD}{target.name}{C_RESET}")
     print(f"  Finder:       {harness_config.models.finder}")
     print(f"  Analyst:      {harness_config.models.analyst}")
-    print(f"  Planner:      {'auto (model decides)' if auto_plan else f'{len(focus_areas)} from config'}")
+    print(f"  Planner:      {'auto (model explores source)' if auto_plan else 'skipped (using config)'}")
     print(f"  Runtime:      {harness_config.sandbox_runtime}")
-    print(f"  Focus areas:  {len(focus_areas)}")
-    for i, area in enumerate(focus_areas):
-        print(f"    {i}: {area}")
+    if focus_areas:
+        print(f"  Focus areas:  {len(focus_areas)}")
+        for i, area in enumerate(focus_areas):
+            print(f"    {i}: {area}")
+    else:
+        print(f"  Focus areas:  {C_CYAN}planner will determine{C_RESET}")
     print(f"  Results:      {run_dir}")
     print("-" * 60)
 
