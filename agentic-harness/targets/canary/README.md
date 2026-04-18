@@ -40,7 +40,7 @@ Each command should produce an ASAN error with non-zero exit code.
 
 ```bash
 docker run --rm --runtime=runsc mythos-canary:latest \
-  sh -c 'printf "CNRY\x01\x01\x01\x06\x00\x20hello" > /tmp/poc1.bin && \
+  sh -c 'python3 -c "import sys; sys.stdout.buffer.write(b\"CNRY\x01\x01\x01\x06\x00\x20hello\")" > /tmp/poc1.bin && \
          /target/bin/canary /tmp/poc1.bin'
 ```
 
@@ -53,7 +53,7 @@ and the free-but-valid bug. Second entry accesses the freed memory:
 
 ```bash
 docker run --rm --runtime=runsc mythos-canary:latest \
-  sh -c 'printf "CNRY\x01\x02\x01\x00\x00\x01\x03\x00\x20AB" > /tmp/poc2.bin && \
+  sh -c 'python3 -c "import sys; sys.stdout.buffer.write(b\"CNRY\x01\x02\x01\x00\x00\x01\x03\x00\x20AB\")" > /tmp/poc2.bin && \
          /target/bin/canary /tmp/poc2.bin'
 ```
 
@@ -66,11 +66,14 @@ allocated), but `uint32` real total is 65792 bytes written:
 
 ```bash
 docker run --rm --runtime=runsc mythos-canary:latest \
-  sh -c 'printf "CNRY\x01\x01\x02\x08\x00\x00\x01\x01\x01AAAA" > /tmp/poc3.bin && \
+  sh -c 'python3 -c "import sys; sys.stdout.buffer.write(b\"CNRY\x01\x01\x02\x08\x00\x00\x01\x01\x01AAAA\")" > /tmp/poc3.bin && \
          /target/bin/canary /tmp/poc3.bin'
 ```
 
 Expected: `==PID==ERROR: AddressSanitizer: heap-buffer-overflow on address ...`
+
+> **Note**: Use `python3` for binary PoC generation, not shell `printf` — the
+> container's shell doesn't reliably interpret `\x` hex escapes.
 
 ## Run with Harness
 
