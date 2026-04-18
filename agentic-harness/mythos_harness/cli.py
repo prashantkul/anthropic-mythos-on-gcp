@@ -56,9 +56,29 @@ async def run_assessment(
         user_id="researcher",
         session_id="assessment",
     ):
+        # Show agent transfers and tool calls
+        author = getattr(event, 'author', None)
+        actions = getattr(event, 'actions', None)
+        if actions:
+            transfer = getattr(actions, 'transfer_to_agent', None)
+            if transfer:
+                print(f"\n>>> TRANSFER TO: {transfer}")
+
         if event.content and event.content.parts:
             for part in event.content.parts:
-                if part.text:
+                if hasattr(part, 'function_call') and part.function_call:
+                    fc = part.function_call
+                    args_str = str(dict(fc.args))[:200] if fc.args else ""
+                    print(f"\n  [{author}] TOOL: {fc.name}({args_str})")
+                elif hasattr(part, 'function_response') and part.function_response:
+                    fr = part.function_response
+                    resp_str = str(fr.response)[:200] if fr.response else ""
+                    print(f"  [{author}] RESULT: {resp_str}")
+                elif part.text:
+                    # Show first 150 chars of text per event
+                    preview = part.text.strip().replace('\n', ' ')[:150]
+                    if preview:
+                        print(f"  [{author}] {preview}")
                     result_text += part.text
 
     print("-" * 60)
