@@ -105,6 +105,8 @@ async def run_assessment(
                         console.print(f"  [bold cyan][{author}][/bold cyan] {preview}")
                     result_text += part.text
 
+    console.print(f"\n[dim]Session ended. Total events processed.[/dim]")
+
     # Merge sub-agent tokens
     for agent_name, counts in get_sub_agent_tokens().items():
         agent_tokens[agent_name] = {

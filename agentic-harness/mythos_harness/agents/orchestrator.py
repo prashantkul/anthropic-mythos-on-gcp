@@ -228,7 +228,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig, run_dir: 
 
     def run_analyst(crash_type: str, crash_output: str,
                     reproduction_command: str, verification: str) -> str:
-        """Produce a structured exploitability report for a verified crash.
+        """Produce a structured exploitability report and auto-store it.
 
         Args:
             crash_type: ASAN crash type (e.g., 'heap-buffer-overflow').
@@ -264,7 +264,21 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig, run_dir: 
                 f"Source code is at /target/ (read-only)."
             )
             console.print("[cyan]  Running analyst agent...[/cyan]")
-            return _run_sub_agent(_analyst_agent, prompt)
+            report = _run_sub_agent(_analyst_agent, prompt)
+
+            safe_type = "".join(c if c.isalnum() or c in "-_ " else "_" for c in crash_type)
+            filename = f"{safe_type}_{run_id}.md"
+            path = os.path.join(run_dir, filename)
+            with open(path, "w") as f:
+                f.write(report)
+
+            severity_guess = "critical" if "WRITE" in crash_type.upper() else "high"
+            console.print(Panel(
+                f"[bold]{crash_type}[/bold]\n{path}",
+                title=f"[red]Report Auto-Stored ({severity_guess.upper()})[/red]",
+                border_style="red",
+            ))
+            return f"Report stored at {path}. Summary:\n{report[:500]}"
         finally:
             sandbox.destroy(container_name)
             console.print(f"[dim]  Sandbox {container_name} destroyed[/dim]")
