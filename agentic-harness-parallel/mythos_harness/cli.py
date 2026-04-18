@@ -11,6 +11,7 @@ from .pipeline import run_parallel_assessment
 
 C_BOLD = "\033[1m"
 C_RESET = "\033[0m"
+C_CYAN = "\033[36m"
 
 
 def main():
