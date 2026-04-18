@@ -26,6 +26,18 @@ from ..config import HarnessConfig, TargetConfig
 from ..sandbox import manager as sandbox
 from ..tools.sandbox_tools import set_container
 
+# ANSI colors
+C_RESET = "\033[0m"
+C_GREEN = "\033[32m"
+C_YELLOW = "\033[33m"
+C_BLUE = "\033[34m"
+C_CYAN = "\033[36m"
+C_RED = "\033[31m"
+C_DIM = "\033[2m"
+C_BOLD = "\033[1m"
+
+# Token tracking
+_token_counts: dict[str, dict[str, int]] = {}
 
 
 @retry(
@@ -34,11 +46,8 @@ from ..tools.sandbox_tools import set_container
     stop=stop_after_attempt(5),
 )
 def _run_sub_agent(agent: Agent, prompt: str) -> str:
-    """Run a sub-agent in a fresh Runner in a separate thread.
+    agent_name = agent.name
 
-    Matches the ai-security-agent execute_sub_agent pattern:
-    fresh session per call, ThreadPoolExecutor for isolation.
-    """
     async def _run():
         session_service = InMemorySessionService()
         await session_service.create_session(
@@ -49,18 +58,35 @@ def _run_sub_agent(agent: Agent, prompt: str) -> str:
         )
         content = types.Content(role="user", parts=[types.Part(text=prompt)])
         result_text = ""
+        inp_tokens = 0
+        out_tokens = 0
+
         async for event in runner.run_async(
             new_message=content, user_id="harness", session_id="sub_session"
         ):
+            usage = getattr(event, 'usage_metadata', None)
+            if usage:
+                inp_tokens += getattr(usage, 'prompt_token_count', 0) or 0
+                out_tokens += getattr(usage, 'candidates_token_count', 0) or 0
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
                         result_text += part.text
+
+        if agent_name not in _token_counts:
+            _token_counts[agent_name] = {"input": 0, "output": 0}
+        _token_counts[agent_name]["input"] += inp_tokens
+        _token_counts[agent_name]["output"] += out_tokens
+        print(f"  {C_DIM}{agent_name}: {inp_tokens:,} in / {out_tokens:,} out{C_RESET}")
         return result_text
 
     with ThreadPoolExecutor() as executor:
         future = executor.submit(asyncio.run, _run())
         return future.result()
+
+
+def get_token_counts() -> dict[str, dict[str, int]]:
+    return _token_counts
 
 
 ORCHESTRATOR_INSTRUCTION = """\
@@ -113,7 +139,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
         """
         run_id = uuid.uuid4().hex[:8]
         container_name = f"find_{target.name}_{run_id}"
-        print(f"\n  [harness] Creating finder sandbox: {container_name}")
+        print(f"\n  {C_GREEN}[finder]{C_RESET} Creating sandbox: {container_name}")
         sandbox.create(
             target.image_tag,
             name=container_name,
@@ -128,20 +154,20 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Source root: {target.source_root}\n"
                 f"Binary path: {target.binary_path}\n"
             )
-            print(f"  [harness] Running finder agent...")
+            print(f"  {C_GREEN}[finder]{C_RESET} Running agent...")
             result = _run_sub_agent(_finder_agent, prompt)
 
             poc_bytes = sandbox.read_file(container_name, "/tmp/poc.bin")
             if poc_bytes:
                 _poc_bytes_store["data"] = poc_bytes
-                print(f"  [harness] PoC extracted: {len(poc_bytes)} bytes")
+                print(f"  {C_GREEN}[finder]{C_RESET} PoC extracted: {C_BOLD}{len(poc_bytes)} bytes{C_RESET}")
             else:
-                print(f"  [harness] No PoC at /tmp/poc.bin")
+                print(f"  {C_YELLOW}[finder]{C_RESET} No PoC at /tmp/poc.bin")
 
             return result
         finally:
             sandbox.destroy(container_name)
-            print(f"  [harness] Finder sandbox destroyed")
+            print(f"  {C_DIM}[finder] Sandbox destroyed{C_RESET}")
 
     def run_verifier(reproduction_command: str, crash_type: str) -> str:
         """Verify a crash by reproducing the PoC in a fresh sandbox.
@@ -156,7 +182,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
 
         run_id = uuid.uuid4().hex[:8]
         container_name = f"grade_{target.name}_{run_id}"
-        print(f"\n  [harness] Creating verifier sandbox: {container_name}")
+        print(f"\n  {C_YELLOW}[verifier]{C_RESET} Creating sandbox: {container_name}")
         sandbox.create(
             target.image_tag,
             name=container_name,
@@ -175,12 +201,12 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Expected crash type: {crash_type}\n"
                 f"Run it 3 times and check all 5 criteria.\n"
             )
-            print(f"  [harness] Running verifier agent...")
+            print(f"  {C_YELLOW}[verifier]{C_RESET} Running agent...")
             result = _run_sub_agent(_verifier_agent, prompt)
             return result
         finally:
             sandbox.destroy(container_name)
-            print(f"  [harness] Verifier sandbox destroyed")
+            print(f"  {C_DIM}[verifier] Sandbox destroyed{C_RESET}")
 
     def run_analyst(crash_type: str, crash_output: str,
                     reproduction_command: str, verification: str) -> str:
@@ -194,7 +220,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
         """
         run_id = uuid.uuid4().hex[:8]
         container_name = f"analyze_{target.name}_{run_id}"
-        print(f"\n  [harness] Creating analyst sandbox: {container_name}")
+        print(f"\n  {C_BLUE}[analyst]{C_RESET} Creating sandbox: {container_name}")
         sandbox.create(
             target.image_tag,
             name=container_name,
@@ -212,7 +238,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Verification:\n{verification[:2000]}\n\n"
                 f"Source code is at /target/ (read-only)."
             )
-            print(f"  [harness] Running analyst agent...")
+            print(f"  {C_BLUE}[analyst]{C_RESET} Running agent...")
             result = _run_sub_agent(_analyst_agent, prompt)
 
             report_dir = os.path.join(harness_config.results_dir, target.name)
@@ -222,12 +248,12 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             path = os.path.join(report_dir, f"{timestamp}_{safe_type}_{run_id}.md")
             with open(path, "w") as f:
                 f.write(result)
-            print(f"  [harness] Report auto-saved: {path}")
+            print(f"  {C_BLUE}[analyst]{C_RESET} Report saved: {C_BOLD}{path}{C_RESET}")
 
             return f"Report saved to {path}. Continue to next focus area."
         finally:
             sandbox.destroy(container_name)
-            print(f"  [harness] Analyst sandbox destroyed")
+            print(f"  {C_DIM}[analyst] Sandbox destroyed{C_RESET}")
 
     def store_report(title: str, content: str, severity: str = "medium") -> str:
         """Store a vulnerability report.
@@ -245,7 +271,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
         path = os.path.join(report_dir, filename)
         with open(path, "w") as f:
             f.write(content)
-        print(f"\n  [harness] Report stored: {path}")
+        print(f"\n  {C_CYAN}[report]{C_RESET} Stored: {C_BOLD}{path}{C_RESET}")
         return f"Report stored at {path}"
 
     return [run_finder, run_verifier, run_analyst, store_report]
