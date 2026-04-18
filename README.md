@@ -13,7 +13,7 @@ Mythos is accessed exclusively via **Vertex AI** — there is no direct access t
 | Document | Description |
 |----------|-------------|
 | [APPROACH.md](APPROACH.md) | Architecture overview: threat model, 9-ring defense-in-depth, comparison table, VPC-SC, Cloud NGFW, source code ingestion, implementation plan |
-| [Option A: Cloud Run](options/cloud-run.md) | gVisor always on, zero idle cost, 24h max runtime |
+| [Option A: Cloud Run](options/cloud-run.md) | **Not recommended** — cannot orchestrate sandbox containers (no Docker daemon, no nested isolation) |
 | [Option B: GCE + Firecracker](options/gce-docker.md) | **Recommended.** Firecracker micro-VM, hardware isolation, full flexibility |
 | [Option C: GKE](options/gke.md) | Most defense-in-depth, scales to teams, highest complexity |
 | [HARNESS.md](agentic-harness/HARNESS.md) | Harness components: Agent Gateway, tool definitions, session management, validation with SandboxBench |
