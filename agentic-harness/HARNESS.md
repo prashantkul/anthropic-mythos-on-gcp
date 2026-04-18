@@ -1,26 +1,30 @@
-# Secure Agentic Harness Recommendations for Mythos
+# Containment Design Considerations for Agentic Harnesses
 
-[Back to README](../README.md) | [Architecture](../APPROACH.md)
+[Back to README](../README.md) | [Architecture](../APPROACH.md) | [Harness Design](HARNESS-DESIGN.md) | [Flow](FLOW.md)
+
+> **Note**: This document captures general security design principles for
+> agentic harnesses. For the actual implemented architecture, see
+> [HARNESS-DESIGN.md](HARNESS-DESIGN.md) and [FLOW.md](FLOW.md).
 
 ## 1. Overview
 
-The agentic harness is the orchestration layer between Vertex AI (Mythos) and the
-sandbox container. It receives tool calls from the model, applies security policies,
-executes approved calls in the sandbox, and returns filtered results. This document
-provides recommendations for building a secure harness informed by
-[SandboxBench](../Prashant_Kulkarni_SadboxBench.pdf) findings on MCP server security
-and AI agent containment.
+Any agentic harness that executes AI-generated tool calls in a sandbox must
+enforce security at multiple layers. The model is untrusted — it may attempt
+to escape the sandbox, exfiltrate data, or access resources beyond its scope.
+These considerations are informed by
+[SandboxBench](../Prashant_Kulkarni_SadboxBench.pdf) findings on MCP server
+security and AI agent containment.
 
 ```mermaid
 graph LR
-    VTXAI[Vertex AI / Mythos] -->|tool calls| GW[Agent Gateway]
+    MODEL[AI Model] -->|tool calls| GW[Security Gateway]
     GW -->|policy check| POLICY{Approved?}
     POLICY -->|yes| EXEC[Execute in Sandbox]
     POLICY -->|no| LOG[Log + Deny]
     EXEC --> SCAN[Output Scanner]
-    SCAN --> VTXAI
+    SCAN --> MODEL
 
-    style GW fill:#6bcb77,stroke:#333
+    style GW fill:#dc2626,stroke:#333,color:#fff
     style POLICY fill:#f39c12,stroke:#333
     style LOG fill:#e74c3c,stroke:#333,color:#fff
 ```
@@ -39,7 +43,9 @@ directly apply to harness design:
 The harness must implement the **secure** pattern: defense-in-depth with input
 validation, argument sanitization, and command allowlisting.
 
-## 3. Harness Architecture
+## 3. General Harness Architecture
+
+Any harness needs these four components, regardless of framework.
 
 ### 3.1 Component Responsibilities
 
@@ -71,10 +77,11 @@ graph TB
 | **Sandbox Manager** | Creates/destroys sandbox containers. Executes approved tool calls. Enforces timeouts |
 | **Audit Logger** | Logs every tool call, policy decision, and output to BigQuery |
 
-### 3.2 Agent Gateway Design
+### 3.2 Security Gateway Design
 
-The gateway is the critical security component. It sits between Vertex AI and the
+The gateway is the critical security component. It sits between the model and the
 sandbox, enforcing policies on both inbound (tool calls) and outbound (results).
+In our implementation this is the `SecurityGatewayPlugin` (ADK BasePlugin).
 
 **Inbound Policy (tool calls from Mythos)**:
 
@@ -123,9 +130,11 @@ graph TB
 | **Container destruction** | `docker rm -f` after session. No state persists between sessions |
 | **Ephemeral by default** | New container per analysis session. No volume reuse between sessions |
 
-## 4. Tool Definitions
+## 4. Tool Design Principles
 
 Define tools with minimal capability. Each tool should do exactly one thing.
+Different agents should get different tool sets — the verifier doesn't need
+`compile`, the analyst doesn't need `run_command`.
 
 ### 4.1 Recommended Tool Set
 
@@ -274,105 +283,16 @@ Enforce per-session resource budgets to prevent runaway exploration:
 - The `/tmp` tmpfs is wiped with the container
 - Audit logs persist in BigQuery — the only data that survives
 
-## 6. Harness Framework Recommendations
+## 6. Framework Considerations
 
-### 6.1 Build vs. Buy
+| Approach | Tradeoffs |
+|---|---|
+| **Google ADK** | Native Vertex AI integration. Use BasePlugin for security gateway. Tool-based delegation for Claude (sub_agents only works with Gemini) |
+| **LangGraph** | Gateway as visible graph node. Built-in checkpointing. Multi-provider support |
+| **Custom** | Full control. More code to maintain |
 
-| Approach | Options | Tradeoffs |
-|---|---|---|
-| **Custom harness** | Python + Docker SDK + Vertex AI SDK | Full control over security policies. More development effort |
-| **Inspect framework** | UK AISI Inspect (used by SandboxBench) | Built-in sandbox execution, scorer API. Designed for evaluation, not production |
-| **LangGraph** | LangGraph + custom tools | Good agentic orchestration. Must add security layer yourself |
-| **Vertex AI Agent Builder** | Google managed agent service | Integrated with GCP. Less control over sandbox isolation |
-
-**Recommendation**: Start with a **custom harness** using the Vertex AI Python SDK
-and Docker SDK. This gives full control over the Agent Gateway policies, which is
-the most security-critical component. The SandboxBench Inspect framework is useful
-for validation (Step 13 of the implementation plan) but not for production use.
-
-### 6.2 Key Libraries
-
-```
-# Core
-google-cloud-aiplatform    # Vertex AI SDK
-docker                     # Docker SDK for Python
-
-# Security
-google-cloud-logging       # Audit logging
-google-cloud-bigquery      # Structured audit storage
-google-cloud-storage       # GCS access for code/results
-
-# Agent Gateway
-pydantic                   # Input validation
-re                         # Pattern matching for blocklists
-```
-
-### 6.3 Minimal Harness Skeleton
-
-```python
-# Pseudocode — illustrates the structure, not a complete implementation
-
-class AgentGateway:
-    def validate_tool_call(self, tool_name, arguments):
-        """Apply all policy checks. Return (approved, reason)."""
-        # 1. Check tool exists in allowlist
-        # 2. Validate arguments against schema
-        # 3. Check argument blocklist regex
-        # 4. Check path restrictions
-        # 5. Check rate limits
-        # 6. Log decision
-        ...
-
-    def scan_output(self, output):
-        """Scan tool output for sensitive content."""
-        # 1. Check for credential patterns
-        # 2. Check for PII patterns
-        # 3. Truncate if over size limit
-        # 4. Reject binary content
-        ...
-
-class SandboxManager:
-    def create(self, image, code_volume):
-        """Create a hardened sandbox container."""
-        # docker run with all security flags
-        ...
-
-    def execute(self, container_id, command, timeout=180):
-        """Execute a command in the sandbox."""
-        # docker exec with timeout, capture output
-        ...
-
-    def destroy(self, container_id):
-        """Destroy the sandbox container."""
-        # docker rm -f
-        ...
-
-class Harness:
-    def run_session(self, target_repo, prompt):
-        gateway = AgentGateway()
-        sandbox = SandboxManager()
-        container = sandbox.create(IMAGE, target_repo)
-
-        try:
-            response = vertex_ai.predict(prompt, tools=TOOLS)
-            while response.has_tool_calls():
-                for call in response.tool_calls:
-                    approved, reason = gateway.validate_tool_call(
-                        call.name, call.arguments
-                    )
-                    if approved:
-                        output = sandbox.execute(container, call)
-                        clean_output = gateway.scan_output(output)
-                        response = vertex_ai.predict(
-                            tool_result=clean_output
-                        )
-                    else:
-                        response = vertex_ai.predict(
-                            tool_result=f"Denied: {reason}"
-                        )
-        finally:
-            sandbox.destroy(container)
-```
+We chose **Google ADK** — see [HARNESS-DESIGN.md](HARNESS-DESIGN.md) for the
+full rationale and implementation details.
 
 ## 7. Validation with SandboxBench
 
