@@ -26,7 +26,6 @@ from ..config import HarnessConfig, TargetConfig
 from ..sandbox import manager as sandbox
 from ..tools.sandbox_tools import set_container
 
-MAX_SUB_AGENT_RESULT = 3000
 
 
 @retry(
@@ -139,8 +138,6 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             else:
                 print(f"  [harness] No PoC at /tmp/poc.bin")
 
-            if len(result) > MAX_SUB_AGENT_RESULT:
-                result = result[:MAX_SUB_AGENT_RESULT] + "\n...[truncated]"
             return result
         finally:
             sandbox.destroy(container_name)
@@ -179,8 +176,6 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             )
             print(f"  [harness] Running verifier agent...")
             result = _run_sub_agent(_verifier_agent, prompt)
-            if len(result) > MAX_SUB_AGENT_RESULT:
-                result = result[:MAX_SUB_AGENT_RESULT] + "\n...[truncated]"
             return result
         finally:
             sandbox.destroy(container_name)
@@ -218,8 +213,6 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
             )
             print(f"  [harness] Running analyst agent...")
             result = _run_sub_agent(_analyst_agent, prompt)
-            if len(result) > MAX_SUB_AGENT_RESULT:
-                result = result[:MAX_SUB_AGENT_RESULT] + "\n...[truncated]"
             return result
         finally:
             sandbox.destroy(container_name)
