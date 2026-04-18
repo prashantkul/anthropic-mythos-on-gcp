@@ -31,6 +31,8 @@ C_CYAN = "\033[36m"
 C_RED = "\033[31m"
 C_DIM = "\033[2m"
 C_BOLD = "\033[1m"
+C_ITALIC = "\033[3m"
+C_MAGENTA = "\033[35m"
 
 # Token tracking
 _token_counts: dict[str, dict[str, int]] = {}
@@ -90,10 +92,10 @@ async def _run_single_agent(
                     if hasattr(part, 'function_call') and part.function_call:
                         fc = part.function_call
                         args_str = str(dict(fc.args))[:150] if fc.args else ""
-                        print(f"    {C_DIM}TOOL: {fc.name}({args_str}){C_RESET}")
+                        print(f"    {C_GREEN}TOOL:{C_RESET} {fc.name}({args_str})")
                     elif part.text:
                         for line in part.text.strip().split("\n")[:5]:
-                            print(f"    {C_DIM}{line[:120]}{C_RESET}")
+                            print(f"    {C_MAGENTA}{C_ITALIC}{line[:120]}{C_RESET}")
                 if part.text:
                     result_text += part.text
     return result_text
