@@ -6,7 +6,10 @@ import yaml
 
 SANDBOX_RUNTIME = os.environ.get("MYTHOS_SANDBOX_RUNTIME", "runsc")
 SANDBOX_MEMORY = os.environ.get("MYTHOS_SANDBOX_MEMORY", "8g")
+SANDBOX_CPUS = os.environ.get("MYTHOS_SANDBOX_CPUS", "2")
 SANDBOX_NETWORK = "none"
+ASSESSMENT_TIMEOUT_SECONDS = int(os.environ.get("MYTHOS_ASSESSMENT_TIMEOUT", "3600"))
+MAX_PARALLEL_FINDERS = int(os.environ.get("MYTHOS_MAX_PARALLEL_FINDERS", "6"))
 
 OPUS_MODEL = os.environ.get("MYTHOS_OPUS_MODEL", "claude-opus-4-7")
 SONNET_MODEL = os.environ.get("MYTHOS_SONNET_MODEL", "claude-sonnet-4-6")
@@ -55,6 +58,9 @@ class HarnessConfig:
     models: ModelConfig = field(default_factory=ModelConfig)
     sandbox_runtime: str = SANDBOX_RUNTIME
     sandbox_memory: str = SANDBOX_MEMORY
+    sandbox_cpus: str = SANDBOX_CPUS
+    assessment_timeout_seconds: int = ASSESSMENT_TIMEOUT_SECONDS
+    max_parallel_finders: int = MAX_PARALLEL_FINDERS
     max_find_turns: int = 2000
     max_grade_turns: int = 50
     max_analyst_turns: int = 100

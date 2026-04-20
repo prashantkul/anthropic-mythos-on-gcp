@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 
 from google.adk.agents import Agent
 from google.adk.models.anthropic_llm import Claude
-from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -23,6 +22,7 @@ import uuid
 
 from ..agents import analyst, finder, verifier
 from ..config import HarnessConfig, TargetConfig
+from ..plugins.runner_factory import make_runner
 from ..plugins.security_gateway import SecurityGatewayPlugin
 from ..sandbox import manager as sandbox
 from ..tools.sandbox_tools import set_container
@@ -46,7 +46,7 @@ _token_counts: dict[str, dict[str, int]] = {}
     wait=wait_exponential(multiplier=2, min=4, max=120),
     stop=stop_after_attempt(5),
 )
-def _run_sub_agent(agent: Agent, prompt: str) -> str:
+def _run_sub_agent(agent: Agent, prompt: str, gateway: SecurityGatewayPlugin) -> str:
     agent_name = agent.name
 
     async def _run():
@@ -54,10 +54,9 @@ def _run_sub_agent(agent: Agent, prompt: str) -> str:
         await session_service.create_session(
             app_name="mythos", user_id="harness", session_id="sub_session"
         )
-        gateway = SecurityGatewayPlugin()
-        runner = Runner(
-            agent=agent, app_name="mythos", session_service=session_service,
-            plugins=[gateway],
+        runner = make_runner(
+            agent, app_name="mythos",
+            session_service=session_service, gateway=gateway,
         )
         content = types.Content(role="user", parts=[types.Part(text=prompt)])
         result_text = ""
@@ -127,7 +126,11 @@ You are an orchestrator coordinating vulnerability research via specialist tools
 """
 
 
-def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
+def _create_tools(
+    harness_config: HarnessConfig,
+    target: TargetConfig,
+    gateway: SecurityGatewayPlugin,
+):
     _finder_agent = finder.create(harness_config.models.finder)
     _verifier_agent = verifier.create(harness_config.models.verifier)
     _analyst_agent = analyst.create(harness_config.models.analyst)
@@ -158,7 +161,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Binary path: {target.binary_path}\n"
             )
             print(f"  {C_GREEN}[finder]{C_RESET} Running agent...")
-            result = _run_sub_agent(_finder_agent, prompt)
+            result = _run_sub_agent(_finder_agent, prompt, gateway)
 
             poc_bytes = sandbox.read_file(container_name, "/tmp/poc.bin")
             if poc_bytes:
@@ -205,7 +208,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Run it 3 times and check all 5 criteria.\n"
             )
             print(f"  {C_YELLOW}[verifier]{C_RESET} Running agent...")
-            result = _run_sub_agent(_verifier_agent, prompt)
+            result = _run_sub_agent(_verifier_agent, prompt, gateway)
             return result
         finally:
             sandbox.destroy(container_name)
@@ -242,7 +245,7 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
                 f"Source code is at /target/ (read-only)."
             )
             print(f"  {C_BLUE}[analyst]{C_RESET} Running agent...")
-            result = _run_sub_agent(_analyst_agent, prompt)
+            result = _run_sub_agent(_analyst_agent, prompt, gateway)
 
             report_dir = os.path.join(harness_config.results_dir, target.name)
             os.makedirs(report_dir, exist_ok=True)
@@ -280,8 +283,12 @@ def _create_tools(harness_config: HarnessConfig, target: TargetConfig):
     return [run_finder, run_verifier, run_analyst, store_report]
 
 
-def create(harness_config: HarnessConfig, target: TargetConfig) -> Agent:
-    tools = _create_tools(harness_config, target)
+def create(
+    harness_config: HarnessConfig,
+    target: TargetConfig,
+    gateway: SecurityGatewayPlugin,
+) -> Agent:
+    tools = _create_tools(harness_config, target, gateway)
     return Agent(
         name="opus_orchestrator",
         model=Claude(model=harness_config.models.orchestrator),

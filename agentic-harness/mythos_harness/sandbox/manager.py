@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import subprocess
 
-from ..config import SANDBOX_MEMORY, SANDBOX_NETWORK, SANDBOX_RUNTIME
+from ..config import SANDBOX_CPUS, SANDBOX_MEMORY, SANDBOX_NETWORK, SANDBOX_RUNTIME
 
 
 def build(dockerfile_dir: str, tag: str) -> str:
@@ -22,6 +22,7 @@ def create(
     runtime: str = SANDBOX_RUNTIME,
     network: str = SANDBOX_NETWORK,
     memory: str = SANDBOX_MEMORY,
+    cpus: str = SANDBOX_CPUS,
     read_only: bool = True,
 ) -> str:
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
@@ -32,6 +33,7 @@ def create(
         f"--runtime={runtime}",
         f"--network={network}",
         f"--memory={memory}",
+        f"--cpus={cpus}",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--user=1000:1000",

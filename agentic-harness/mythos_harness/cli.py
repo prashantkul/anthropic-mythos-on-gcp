@@ -4,13 +4,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from .agents.orchestrator import create as create_orchestrator, get_token_counts
 from .agents.orchestrator import C_RESET, C_GREEN, C_YELLOW, C_BLUE, C_CYAN, C_RED, C_DIM, C_BOLD
 from .config import HarnessConfig, ModelConfig, TargetConfig
+from .plugins.runner_factory import make_runner
 from .plugins.security_gateway import SecurityGatewayPlugin
 from .sandbox import manager as sandbox
 
@@ -24,8 +24,8 @@ async def run_assessment(
         print(f"Building image {target.image_tag} from {target.dockerfile_dir}...")
         sandbox.build(target.dockerfile_dir, target.image_tag)
 
-    opus_agent = create_orchestrator(harness_config, target)
     gateway = SecurityGatewayPlugin(max_calls_per_session=2500)
+    opus_agent = create_orchestrator(harness_config, target, gateway)
 
     session_service = InMemorySessionService()
     await session_service.create_session(
@@ -34,11 +34,11 @@ async def run_assessment(
         session_id="assessment",
     )
 
-    runner = Runner(
-        agent=opus_agent,
+    runner = make_runner(
+        opus_agent,
         app_name="mythos_harness",
         session_service=session_service,
-        plugins=[gateway],
+        gateway=gateway,
     )
 
     content = types.Content(role="user", parts=[types.Part(text=task)])
@@ -54,33 +54,37 @@ async def run_assessment(
     print(f"  Runtime:      {harness_config.sandbox_runtime}")
     print("-" * 60)
 
-    async for event in runner.run_async(
-        new_message=content,
-        user_id="researcher",
-        session_id="assessment",
-    ):
-        author = getattr(event, 'author', None) or "unknown"
+    try:
+        async with asyncio.timeout(harness_config.assessment_timeout_seconds):
+            async for event in runner.run_async(
+                new_message=content,
+                user_id="researcher",
+                session_id="assessment",
+            ):
+                author = getattr(event, 'author', None) or "unknown"
 
-        usage = getattr(event, 'usage_metadata', None)
-        if usage:
-            orch_input_tokens += getattr(usage, 'prompt_token_count', 0) or 0
-            orch_output_tokens += getattr(usage, 'candidates_token_count', 0) or 0
+                usage = getattr(event, 'usage_metadata', None)
+                if usage:
+                    orch_input_tokens += getattr(usage, 'prompt_token_count', 0) or 0
+                    orch_output_tokens += getattr(usage, 'candidates_token_count', 0) or 0
 
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                if hasattr(part, 'function_call') and part.function_call:
-                    fc = part.function_call
-                    args_str = str(dict(fc.args))[:200] if fc.args else ""
-                    print(f"\n  {C_CYAN}[{author}]{C_RESET} TOOL: {fc.name}({args_str})")
-                elif hasattr(part, 'function_response') and part.function_response:
-                    fr = part.function_response
-                    resp_str = str(fr.response)[:150] if fr.response else ""
-                    print(f"  {C_CYAN}[{author}]{C_RESET} {C_DIM}RESULT: {resp_str}{C_RESET}")
-                elif part.text:
-                    preview = part.text.strip().replace('\n', ' ')[:150]
-                    if preview:
-                        print(f"  {C_CYAN}[{author}]{C_RESET} {preview}")
-                    result_text += part.text
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, 'function_call') and part.function_call:
+                            fc = part.function_call
+                            args_str = str(dict(fc.args))[:200] if fc.args else ""
+                            print(f"\n  {C_CYAN}[{author}]{C_RESET} TOOL: {fc.name}({args_str})")
+                        elif hasattr(part, 'function_response') and part.function_response:
+                            fr = part.function_response
+                            resp_str = str(fr.response)[:150] if fr.response else ""
+                            print(f"  {C_CYAN}[{author}]{C_RESET} {C_DIM}RESULT: {resp_str}{C_RESET}")
+                        elif part.text:
+                            preview = part.text.strip().replace('\n', ' ')[:150]
+                            if preview:
+                                print(f"  {C_CYAN}[{author}]{C_RESET} {preview}")
+                            result_text += part.text
+    except TimeoutError:
+        print(f"\n{C_RED}[TIMEOUT]{C_RESET} Assessment exceeded {harness_config.assessment_timeout_seconds}s wall-clock limit. Aborting.")
 
     # Token summary
     print("\n" + "-" * 60)
