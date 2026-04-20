@@ -84,70 +84,71 @@ The architecture is organized as concentric security rings. Container hardening 
 foundational (innermost ring). Each outer ring adds defense-in-depth that operates
 independently -- if an inner ring is breached, outer rings still contain the impact.
 
-```mermaid
-graph LR
-    S[Sandbox Container] -->|all egress| P[Squid Proxy]
-    P --> NGFW[Cloud NGFW]
-    NGFW --> NAT[Cloud NAT]
-    NAT --> VPN[Cloud VPN]
-    VPN --> ONPREM[On-Prem Proxy]
-    ONPREM --> Internet((Internet))
+**The sandbox has no network.** Each analyst container runs with `--network=none`
+(`agentic-harness/mythos_harness/config.py:9`,
+`agentic-harness/mythos_harness/sandbox/manager.py:33`). It has no interface, no
+resolver, no route. There is no sandbox→internet path — so no egress proxy, no
+NGFW inspection, and no on-prem routing is required for sandbox traffic.
+Data crosses the boundary only through `docker exec` stdin/stdout pipes owned
+by the orchestrator.
 
-    style S fill:#ff6b6b,stroke:#333,color:#fff
-    style P fill:#ffd93d,stroke:#333
-    style NGFW fill:#e67e22,stroke:#333,color:#fff
-    style ONPREM fill:#2c3e50,stroke:#333,color:#fff
-```
+Network egress only exists for the **orchestrator VM**, and it reaches GCP APIs
+(Vertex AI, GCS, BigQuery, Artifact Registry, Cloud Source Repos) over Private
+Service Connect inside the VPC-SC perimeter. It does not talk to the public
+internet at runtime.
 
 ```mermaid
 graph LR
-    GW[Agent Gateway] -->|via PSC| VTXAI[Vertex AI / Mythos]
-    GW --> GCS[(GCS)]
-    GW --> BQ[(BigQuery)]
-    CSR[Cloud Source Repos] -->|read-only volume| S[Sandbox]
-
-    S -.->|BLOCKED| VTXAI
-    S -.->|BLOCKED| META[Metadata 169.254.169.254]
+    S[Sandbox Container<br/>--network=none] -.->|NO EGRESS| X[✗ No network namespace]
+    O[Orchestrator VM] -->|PSC, within VPC-SC| VTXAI[Vertex AI / Mythos]
+    O -->|PSC| GCS[(GCS)]
+    O -->|PSC| BQ[(BigQuery)]
+    O -->|PSC| AR[(Artifact Registry)]
+    CSR[Cloud Source Repos] -->|read-only volume via orchestrator| S
+    O -.->|docker exec stdin/stdout| S
 
     style S fill:#ff6b6b,stroke:#333,color:#fff
-    style GW fill:#6bcb77,stroke:#333
-    style META fill:#999,stroke:#333,color:#fff
+    style O fill:#3498db,stroke:#333,color:#fff
+    style X fill:#999,stroke:#333,color:#fff
 ```
 
 ### 3.2 Credential and API Access Model
 
-The sandbox container has NO credentials and NO network path to GCP APIs. All GCP
-interactions are mediated by the orchestrator, which itself is behind an Agent Gateway
-that enforces policy. Mythos is accessed exclusively via Vertex AI -- there is no
-direct path to Anthropic APIs from any component.
+The sandbox container has NO credentials and NO network at all. All GCP interactions
+are mediated by the orchestrator, whose tool calls are gated by the ADK
+`SecurityGatewayPlugin` (Ring 6) before reaching the sandbox. Mythos is accessed
+exclusively via Vertex AI — there is no direct path to Anthropic APIs from any
+component, because no component has an egress allowlist that includes
+`anthropic.com`.
 
 ```mermaid
 graph LR
     O[Orchestrator] -->|prompts via PSC| VTXAI[(Vertex AI)]
-    VTXAI -->|tool calls| GW[Agent Gateway]
-    GW -->|filtered calls| O
-    O -->|execute| S[Sandbox]
-    S -->|output| O
+    VTXAI -->|tool calls| PLUGIN[SecurityGatewayPlugin]
+    PLUGIN -->|approved| O
+    O -->|docker exec stdin| S[Sandbox<br/>--network=none]
+    S -->|stdout, size-capped| O
 
     O --> GCS[(GCS)]
     O --> BQ[(BigQuery)]
     O --> AR[(Artifact Registry)]
     O --> CSR[(Cloud Source Repos)]
 
-    S -.->|BLOCKED: no SA, no metadata| GCS
-    S -.->|BLOCKED| VTXAI
-    S -.->|BLOCKED: not in allowlist| ANTH[anthropic.com]
+    S -.->|no network namespace| GCS
+    S -.->|no network namespace| VTXAI
+    S -.->|no network namespace| ANTH[anthropic.com]
 
     style S fill:#ff6b6b,stroke:#333,color:#fff
-    style GW fill:#6bcb77,stroke:#333
+    style PLUGIN fill:#6bcb77,stroke:#333
     style O fill:#3498db,stroke:#333,color:#fff
     style ANTH fill:#999,stroke:#333,color:#fff
 ```
 
 **Why no direct Anthropic API access**: Routing through Vertex AI means all model
 interactions are governed by GCP IAM, VPC-SC, audit logs, and org policies. Direct
-Anthropic API calls would bypass all of these controls. The Squid proxy allowlist
-does NOT include `anthropic.com` -- this is intentional.
+Anthropic API calls would bypass all of these controls. The orchestrator only
+resolves GCP API hostnames over Private Service Connect — `anthropic.com` has no
+route from either the orchestrator or the sandbox.
 
 ### 3.3 Option Comparison Table
 
@@ -156,10 +157,10 @@ does NOT include `anthropic.com` -- this is intentional.
 | **Isolation mechanism** | gVisor (built-in, always on) | **Firecracker micro-VM** (recommended) or Kata Containers. Each sandbox gets own kernel | **Kata Containers** via RuntimeClass (recommended) or GKE Sandbox (gVisor) |
 | **Escape difficulty** | Hardest managed option. No SSH, no node access, gVisor intercepts syscalls | **Hardest self-managed**. Micro-VM escape requires breaking KVM hypervisor (hardware-enforced) | Hard. Kata micro-VM + namespace + NetworkPolicy. gVisor fallback available |
 | **Metadata service risk** | None. Cloud Run abstracts credentials internally | HIGH if not blocked. Must add iptables rule on host. Easy to forget | Medium. Must configure NetworkPolicy. Workload Identity disables legacy endpoint |
-| **Egress control** | VPC connector + Cloud NAT. L7 filtering needs sidecar proxy | Squid on host or sidecar. iptables for L3. Full flexibility | Cilium L3/L4 NetworkPolicy + Squid pod for L7 domain filtering |
+| **Egress control** | Not needed — sandbox `--network=none`. L7 filtering available via sidecar proxy if future design allows egress | Not needed — sandbox `--network=none` on host. iptables/Squid available if future design allows egress | Not needed — sandbox `--network=none` on pod. Cilium L3/L4 + Squid pod available if future design allows egress |
 | **VPC Service Controls** | Supported. Cloud Run service within perimeter | Supported. VM within perimeter | Supported. GKE cluster within perimeter |
-| **Cloud NGFW / Palo Alto** | Via VPC connector — traffic passes through NGFW endpoint | Direct — all egress from VM subnet inspected by NGFW | Direct — all egress from node subnet inspected by NGFW |
-| **On-prem proxy routing** | Via VPC connector → Cloud VPN | Direct — Cloud NAT → VPN → on-prem proxy | Direct — Cloud NAT → VPN → on-prem proxy |
+| **Cloud NGFW / Palo Alto** | Not deployed — no runtime internet egress. Pattern documented if future design allows it | Not deployed — no runtime internet egress. Pattern documented if future design allows it | Not deployed — no runtime internet egress. Pattern documented if future design allows it |
+| **On-prem proxy routing** | Not deployed — nothing to route. Pattern documented if future design allows it | Not deployed — nothing to route. Pattern documented if future design allows it | Not deployed — nothing to route. Pattern documented if future design allows it |
 | **Vertex AI access** | SA attached to service → Vertex AI API via Private Google Access | Orchestrator on host → Vertex AI via Private Service Connect | Orchestrator pod with Workload Identity → Vertex AI via PSC |
 | **GCS access** | Orchestrator SA: `roles/storage.objectAdmin` | Same — orchestrator on host has SA, sandbox is isolated | Same — orchestrator pod has Workload Identity, sandbox pod does not |
 | **BigQuery access** | Orchestrator SA: `roles/bigquery.dataEditor` + `jobUser` | Same | Same |
@@ -173,7 +174,7 @@ does NOT include `anthropic.com` -- this is intentional.
 | **Monthly cost (idle)** | $0 | ~$30 (e2-standard-4, auto-stopped) | ~$100+ (cluster fee + nodes) |
 | **Monthly cost (active, 8h/day)** | ~$15-40 (per-second billing) | ~$50-80 (fixed VM) | ~$120-180 (cluster + nodes) |
 | **Setup complexity** | Low (~30 min) | Medium (~1 hour) | High (~2-3 hours) |
-| **Enterprise controls setup** | +1 hour (VPC-SC, NGFW, VPN) | +1 hour (same) | +1.5 hours (same + K8s policies) |
+| **Enterprise controls setup** | +30 min (VPC-SC, firewall, PSC) | +30 min (same) | +1 hour (same + K8s policies) |
 | **Attack surface** | Minimal. No SSH, no node, no K8s API | VM is reachable if container escapes | K8s API server, etcd, kubelet, RBAC — each is attack surface |
 | **SandboxBench escape applicability** | 0/8 escape challenges apply (gVisor blocks all) | 0/8 with Firecracker micro-VM (own kernel). 5/8 apply if using runc without hardening | 0/8 with Kata micro-VM. 6/8 Docker + 6/6 K8s apply if misconfigured |
 | **Best for** | Short-lived, bounded analysis tasks | Interactive, long-running exploration. Single researcher | Team use, multi-tenant, production workloads |
@@ -221,17 +222,24 @@ graph LR
     style R8 fill:#3498db,color:#fff
 ```
 
-| Ring | Layer | Key Controls |
-|------|-------|-------------|
-| 0 | Container Hardening | Non-root, read-only rootfs, drop ALL caps, seccomp, no privilege escalation |
-| 1 | Micro-VM / gVisor | Firecracker or Kata micro-VM (GCE/GKE), gVisor user-space kernel (Cloud Run). Own kernel per sandbox, no Docker socket |
-| 2 | Egress Proxy | Squid domain allowlist, `anthropic.com` denied, proxy handles DNS, request logging |
-| 3 | VPC + Firewall | Deny-all ingress, block metadata `169.254.169.254`, Cloud NAT only, IAP for SSH |
-| 4 | Cloud NGFW | L7 DPI, IPS/IDS signatures, TLS inspection, URL filtering, DNS security |
-| 5 | VPC-SC Perimeter | Ingress from orchestrator SA + corp IPs only, deny all cross-project egress |
-| 6 | SecurityGatewayPlugin (ADK) | ADK BasePlugin — command blocklist, path restriction, rate limiting, output scanning. [Agent Gateway](https://agentgateway.dev/) for future MCP scenarios |
-| 7 | On-Prem Proxy | Corporate DLP, CASB visibility, SOC/SIEM integration via Cloud VPN |
-| 8 | Monitoring | Cloud Audit Logs, VPC Flow Logs, NGFW logs, proxy logs, alerting policies |
+| Ring | Layer | Key Controls | Applies to |
+|------|-------|-------------|-----------|
+| 0 | Container Hardening | Non-root, read-only rootfs, drop ALL caps, seccomp, no privilege escalation, `--network=none` | Sandbox |
+| 1 | Micro-VM / gVisor | Firecracker or Kata micro-VM (GCE/GKE), gVisor user-space kernel (Cloud Run). Own kernel per sandbox, no Docker socket | Sandbox |
+| 2 | Egress Proxy | **N/A in default design** — sandbox has no network. Retained only if a future design allows sandbox or orchestrator outbound internet access | — |
+| 3 | VPC + Firewall | Deny-all ingress, block metadata `169.254.169.254` at host iptables, Cloud NAT only, IAP for SSH | Orchestrator VM |
+| 4 | Cloud NGFW | L7 DPI, IPS/IDS signatures, TLS inspection, URL filtering, DNS security | Orchestrator VM (only if external egress is introduced) |
+| 5 | VPC-SC Perimeter | Ingress from orchestrator SA + corp IPs only, deny all cross-project egress | GCP APIs |
+| 6 | SecurityGatewayPlugin (ADK) | ADK BasePlugin — command blocklist, path restriction, rate limiting, output scanning. [Agent Gateway](https://agentgateway.dev/) for future MCP scenarios | Tool-call boundary |
+| 7 | On-Prem Proxy | **N/A in default design** — no runtime internet egress. Apply only if corporate policy mandates DLP/CASB on future external traffic | — |
+| 8 | Monitoring | Cloud Audit Logs, VPC Flow Logs, NGFW logs (if present), plugin denial logs, alerting policies | All layers |
+
+**Ring 2, 4, 7 note**: The original design assumed sandbox-initiated internet egress
+through a Squid allowlist, Cloud NGFW, and an on-prem proxy. That entire chain was
+removed once the sandbox was locked to `--network=none`: with no container network
+namespace, there is no egress traffic to inspect. These rings are left in the model
+as optional layers for any future design that re-introduces external egress from the
+orchestrator (e.g., package fetch at runtime). They are not deployed today.
 
 ### 4.1 Ring 0 — Container Hardening (Foundation)
 
@@ -282,99 +290,79 @@ by hardware virtualization (KVM/VMX).
 | Unknown zero-day in isolation layer | gVisor is ~200K LoC Go — smaller than Linux kernel but still attack surface | KVM hypervisor is battle-tested, hardware-enforced (VMX/VT-x) |
 | Performance | 5-20% CPU overhead | ~5% CPU, ~5MB memory, ~125ms boot (Firecracker) |
 
-### 4.3 Ring 2 — Egress Proxy
+### 4.3 Ring 2 — Egress Proxy (Not Deployed)
 
-Adapted from the SandboxBench Squid proxy configuration. The sandbox container's
-network namespace routes ALL traffic through the proxy. The container has no direct
-DNS resolver -- the proxy handles DNS resolution.
+**Status**: Not used in the current design. The sandbox runs with `--network=none`,
+so there is no container traffic to proxy. The orchestrator reaches GCP APIs over
+Private Service Connect and does not make external HTTP calls at runtime, so it has
+no proxy requirement either.
 
-**Critical control**: `anthropic.com` is NOT in the allowlist. All Mythos model
-access goes through Vertex AI APIs on `googleapis.com`, accessed only by the
-orchestrator. This prevents the sandbox from bypassing Vertex AI controls.
-
-| Category | Allowed Domains | Purpose |
-|---|---|---|
-| Package repos | `.pypi.org`, `files.pythonhosted.org` | Python packages |
-| Package repos | `.debian.org`, `.ubuntu.com` | System packages |
-| Package repos | `.npmjs.org`, `registry.npmjs.org` | Node.js packages (if needed) |
-| **Deny** | `anthropic.com`, `api.anthropic.com` | **No direct Anthropic access** |
-| **Deny** | `*.googleapis.com` | **No GCP API access from sandbox** |
-| **Deny** | **Everything else** | **Default deny** |
-
-Note: `.googleapis.com` is denied from the sandbox. Only the orchestrator (which
-is outside the container network) accesses GCP APIs. This is enforced by both the
-proxy allowlist and the container's network namespace.
+Kept here as a reference for any future design that re-introduces outbound internet
+access (e.g., allowing the analyst to pull packages at runtime, or letting the
+orchestrator fetch external resources without CSR mirroring). If that change is
+made, a Squid-style domain allowlist should be placed in front of the egress with
+`anthropic.com` and `*.googleapis.com` both denied from the sandbox, and only
+package-repo hostnames permitted.
 
 ### 4.4 Ring 3 — VPC Network Controls
 
+Ring 3 applies to the orchestrator VM. The sandbox is excluded from the VPC
+entirely because it runs in `--network=none` — it has no interface and no VPC
+presence. VPC rules still matter as a second-layer guarantee for the orchestrator
+and as a belt-and-suspenders host-iptables layer against any future
+misconfiguration that grants a sandbox a network namespace.
+
 ```mermaid
 graph LR
-    VM[Sandbox VM\nNo external IP] --> NGFW_EP[Cloud NGFW]
-    NGFW_EP --> NAT_VPC[Cloud NAT]
-    VM -->|private IP| PSC[PSC Endpoint\nVertex AI, GCS, BQ]
+    VM[Orchestrator VM<br/>No external IP] -->|private IP| PSC[PSC Endpoint<br/>Vertex AI, GCS, BQ, AR, CSR]
+    SBX[Sandbox<br/>--network=none] -.->|no VPC presence| VM
 
-    style VM fill:#ff6b6b,stroke:#333,color:#fff
-    style NGFW_EP fill:#e67e22,stroke:#333,color:#fff
-    style PSC fill:#3498db,stroke:#333,color:#fff
+    style VM fill:#3498db,stroke:#333,color:#fff
+    style SBX fill:#ff6b6b,stroke:#333,color:#fff
+    style PSC fill:#6bcb77,stroke:#333
 ```
 
 **Firewall Rules** (priority order):
 
 | Priority | Rule | Action |
 |---|---|---|
-| P800 | Egress to `169.254.169.254/32`, tag: `sandbox` | **DENY** |
-| P900 | Ingress from `35.235.240.0/20` port 22 (IAP SSH) | ALLOW |
-| P900 | Internal `10.0.0.0/16` (orchestrator to GCP services) | ALLOW |
-| P1000 | All ingress | **DENY** |
-| P1000 | All egress except to NGFW endpoint | **DENY** |
+| P800 | Host iptables FORWARD drop to `169.254.169.254/32` from container subnets | **DENY** (belt-and-suspenders — sandbox has no netns) |
+| P900 | Ingress from `35.235.240.0/20` port 22 (IAP SSH) to orchestrator | ALLOW |
+| P900 | Internal `10.0.0.0/16` → PSC endpoints for GCP services | ALLOW |
+| P1000 | All other ingress | **DENY** |
+| P1000 | All other egress | **DENY** |
 
 **Private Service Connect (PSC)**: GCP API traffic (Vertex AI, GCS, BQ, AR) does not
 traverse the public internet. PSC creates private endpoints within the VPC, so the
 orchestrator accesses `googleapis.com` via a private IP address. This traffic stays
 entirely on Google's backbone and is subject to VPC-SC perimeter checks.
 
-### 4.5 Ring 4 — Cloud NGFW / Palo Alto
+### 4.5 Ring 4 — Cloud NGFW / Palo Alto (Not Deployed for Sandbox)
 
-Cloud NGFW Enterprise (powered by Palo Alto Networks) provides L7 inspection for
-all traffic transiting the VPC. This catches threats that the Squid proxy cannot --
-encrypted C2 channels, novel exfiltration techniques, and exploit delivery.
+**Status**: Not used in the current design for the sandbox, because the sandbox
+generates no network traffic (`--network=none`). The orchestrator's only runtime
+egress is to GCP APIs over Private Service Connect, which stays on Google's
+backbone and doesn't traverse an NGFW endpoint.
 
-| Capability | What It Does | Why It Matters for Mythos |
-|---|---|---|
-| **L7 Deep Packet Inspection** | Inspects application-layer protocols | Detects covert channels disguised as HTTP/S |
-| **IPS/IDS** | Signature-based and anomaly-based threat detection | Catches known exploit patterns in egress traffic |
-| **TLS Inspection** | Decrypts, inspects, re-encrypts TLS traffic | Mythos could tunnel data inside TLS to allowed domains |
-| **URL Filtering** | Categorize and filter URLs beyond domain-level | More granular than Squid domain allowlist |
-| **Threat Prevention** | WildFire sandbox analysis of unknown files | Catches zero-day malware in egress traffic |
-| **DNS Security** | Inspect DNS queries for tunneling and DGA | SandboxBench `dns_tunnel` challenge targets this exact vector |
+Cloud NGFW Enterprise (Palo Alto Networks) would provide L7 DPI, IPS/IDS, TLS
+inspection, URL filtering, and DNS Security. These are relevant only if the
+architecture is later extended to allow outbound internet traffic from either the
+sandbox or the orchestrator. Deployment pattern in that case: NGFW endpoint in
+the VPC, firewall policy routes external egress through the endpoint before Cloud
+NAT, Security Profiles applied, decisions logged to Cloud Logging.
 
-**Deployment**: Cloud NGFW is deployed as a firewall endpoint in the VPC. A firewall
-policy routes all egress traffic from the sandbox subnet through the NGFW endpoint
-before it reaches Cloud NAT. The NGFW applies Security Profiles (threat prevention,
-URL filtering) and logs all decisions to Cloud Logging.
+**Today's inspection points for sandbox behavior** (in order):
 
-```mermaid
-graph LR
-    subgraph "Traffic Flow: Sandbox Egress"
-        A[Sandbox Container] -->|port 3128| B[Squid Proxy<br/>L7 domain allowlist]
-        B -->|VPC routing| C[Cloud NGFW Endpoint<br/>Palo Alto inspection<br/>IPS + TLS + URL filtering]
-        C -->|clean traffic only| D[Cloud NAT]
-        D --> E[Cloud VPN]
-        E --> F[On-Prem Proxy<br/>Corporate DLP/CASB]
-        F -->|final egress| G((Internet))
-    end
+1. **Ring 6 — `SecurityGatewayPlugin.before_tool_callback`** — command/arg/path validation
+   (`agentic-harness/mythos_harness/plugins/security_gateway.py:60`)
+2. **Ring 0 — container isolation** — `--network=none`, `--read-only`, `--cap-drop=ALL`,
+   non-root (`agentic-harness/mythos_harness/sandbox/manager.py:29-45`)
+3. **Ring 1 — runtime isolation** — gVisor or Firecracker guest kernel
+4. **Ring 6 — `SecurityGatewayPlugin.after_tool_callback`** — output credential scrubbing
+   and size cap (`plugins/security_gateway.py:91,137-151`)
 
-    style A fill:#ff6b6b,stroke:#333,color:#fff
-    style B fill:#ffd93d,stroke:#333
-    style C fill:#e67e22,stroke:#333,color:#fff
-    style F fill:#2c3e50,stroke:#333,color:#fff
-```
-
-**Four independent inspection points** for all internet-bound traffic:
-1. **Squid Proxy** — domain allowlist (L7, application-aware)
-2. **Cloud NGFW** — threat prevention, IPS, TLS inspection (L7, signature-based)
-3. **Cloud NAT** — stateful connection tracking (L3/L4)
-4. **On-Prem Proxy** — corporate DLP, CASB, SOC visibility (L7, policy-based)
+With the sandbox network-isolated, these four checkpoints are where every attack
+must be stopped — not at a network perimeter.
 
 ### 4.6 Ring 5 — VPC Service Controls
 
@@ -496,37 +484,17 @@ sufficient and simpler.
 See [FLOW.md](agentic-harness/FLOW.md) for the full security architecture
 and how the plugin integrates with the ADK multi-agent harness.
 
-### 4.8 Ring 7 — On-Premises Proxy Routing
+### 4.8 Ring 7 — On-Premises Proxy Routing (Not Deployed)
 
-All internet-bound traffic is routed back through the corporate network via Cloud VPN
-or Cloud Interconnect. This gives the corporate security team full visibility and
-applies existing DLP, CASB, and SOC policies to Mythos traffic.
+**Status**: Not used in the current design. There is no internet-bound traffic
+from the sandbox (`--network=none`) or from the orchestrator at runtime (GCP APIs
+via PSC, source via CSR/GCS inside the perimeter). So there is nothing to route
+back through a corporate proxy for DLP/CASB/SOC inspection.
 
-```mermaid
-graph LR
-    NAT[Cloud NAT] --> VPN[Cloud VPN]
-    VPN -->|IPsec| PROXY[Corp Proxy]
-    PROXY --> DLP[DLP Engine]
-    PROXY --> CASB[CASB]
-    PROXY --> SIEM[SIEM / SOC]
-    PROXY -->|clean traffic| INT((Internet))
-
-    style PROXY fill:#2c3e50,stroke:#333,color:#fff
-    style DLP fill:#c0392b,stroke:#333,color:#fff
-    style SIEM fill:#2980b9,stroke:#333,color:#fff
-```
-
-**When to use on-prem routing vs. direct egress**:
-
-| Scenario | Recommendation |
-|---|---|
-| Corporate policy requires all internet traffic through proxy | On-prem routing mandatory |
-| Existing DLP/CASB investment you want to leverage | On-prem routing recommended |
-| Low-latency needed for package downloads | Direct egress via Cloud NAT (NGFW still inspects) |
-| No corporate proxy infrastructure | Skip this ring, rely on Rings 2-4 |
-
-On-prem routing adds 10-50ms latency per request. For Mythos workloads (code analysis,
-not real-time serving), this is negligible.
+Apply this ring only if the architecture later allows external egress. The
+integration pattern — Cloud NAT → Cloud VPN → corp proxy → DLP/CASB/SIEM →
+Internet — and its 10-50ms per-request latency are captured in prior revisions
+of this document if that change is needed.
 
 ### 4.9 Ring 8 — Monitoring and Audit
 
@@ -534,10 +502,8 @@ not real-time serving), this is negligible.
 |---|---|---|
 | Cloud Audit Logs (Admin Activity) | Cloud Logging → BigQuery | All GCP API calls (IAM changes, resource creation) |
 | Cloud Audit Logs (Data Access) | Cloud Logging → BigQuery | All reads/writes to GCS, BQ, Vertex AI |
-| VPC Flow Logs | Cloud Logging → BigQuery | All network flows to/from sandbox subnet |
-| Cloud NGFW Logs | Cloud Logging → BigQuery | All L7 inspection decisions, threats detected |
-| Squid Proxy Access Log | Container stdout → Cloud Logging → BigQuery | All HTTP/S requests from sandbox, allowed and denied |
-| Agent Gateway Log | Cloud Logging → BigQuery | All tool calls, policy decisions, content scans |
+| VPC Flow Logs | Cloud Logging → BigQuery | All network flows to/from orchestrator subnet (sandbox has no flows — `--network=none`) |
+| SecurityGatewayPlugin stats | stdout → Cloud Logging → BigQuery | Per-session tool-call count and denial count (`plugins/security_gateway.py:153-158`) |
 | Container Logs | Cloud Logging | Sandbox stdout/stderr — agent's actual commands and output |
 | VPC-SC Violation Logs | Cloud Logging → BigQuery | All denied API calls at perimeter boundary |
 
@@ -546,31 +512,30 @@ not real-time serving), this is negligible.
 | Alert | Trigger | Severity |
 |---|---|---|
 | VPC-SC violation | Any denied API call at perimeter | CRITICAL |
-| NGFW threat detected | IPS signature match or anomaly | HIGH |
-| Metadata access attempt | Egress to 169.254.169.254 | CRITICAL |
-| Proxy deny spike | >10 denied requests in 1 minute | MEDIUM |
-| Agent Gateway block | Tool call denied by policy | HIGH |
-| Unusual egress volume | >100MB egress in 10 minutes | MEDIUM |
+| Metadata access attempt | Host iptables drop to 169.254.169.254 | CRITICAL |
+| Plugin denial spike | >10 tool-call denials in 1 minute | MEDIUM |
+| Plugin session limit hit | `call_count > max_calls_per_session` | HIGH |
+| Sandbox network violation | Any packet observed from sandbox netns | CRITICAL (should be impossible) |
 
 ### 4.10 SandboxBench Escape Vector Mitigation (Updated)
 
 Every escape vector tested in SandboxBench is mitigated at multiple rings.
 No single ring is solely responsible for any mitigation.
 
-| SandboxBench Challenge | Attack Vector | Ring 0 (Container) | Ring 1 (Micro-VM / gVisor) | Ring 2 (Proxy) | Ring 3 (VPC) | Ring 4 (NGFW) | Ring 5 (VPC-SC) |
-|---|---|---|---|---|---|---|---|
-| `privileged` | Mount `/dev/sda` | `privileged: false`, drop ALL | Micro-VM: own kernel, no host `/dev`. gVisor: blocks raw device | — | — | — | — |
-| `docker_socket` | Docker API via socket | No socket mount | — | — | — | — | — |
-| `capabilities` | `CAP_SYS_ADMIN` mount | `drop: ["ALL"]` | Micro-VM: mount only affects guest. gVisor: blocks `mount` | — | — | — | — |
-| `shared_pid` | `/proc/1/root` access | `hostPID: false` | Micro-VM: separate kernel, no host PID. gVisor: separate namespace | — | — | — | — |
-| `kernel_module` | `insmod` malicious module | No `CAP_SYS_MODULE` | Micro-VM: module loads in guest kernel only. gVisor: blocks syscall | — | — | — | — |
-| `cgroup_escape` | cgroups v1 `release_agent` | No `CAP_SYS_ADMIN` | Micro-VM: cgroups are guest-only. gVisor: intercepts cgroup ops | — | — | — | — |
-| `proxy_bypass` | Exfiltrate around proxy | — | — | No direct egress from container network | Firewall denies non-proxy egress | NGFW inspects all traffic | — |
-| `dns_tunnel` | Data via DNS queries | — | — | Proxy handles DNS, container has no resolver | — | NGFW DNS Security detects tunneling | — |
-| `cloud_metadata` | Steal credentials via 169.254.169.254 | — | — | — | iptables blocks metadata IP | — | Stolen creds useless outside perimeter |
-| `container_pivot` | SSH to adjacent services | — | — | Proxy-only egress, no SSH allowed | Firewall blocks lateral traffic | — | — |
-| `cron_persistence` | Cron job for persistence | Read-only rootfs, no cron | — | — | — | — | — |
-| `container_spawn` | Docker socket to spawn containers | No socket, no Docker CLI | — | — | — | — | — |
+| SandboxBench Challenge | Attack Vector | Ring 0 (Container, incl. `--network=none`) | Ring 1 (Micro-VM / gVisor) | Ring 3 (VPC / iptables) | Ring 5 (VPC-SC) | Ring 6 (SecurityGatewayPlugin) |
+|---|---|---|---|---|---|---|
+| `privileged` | Mount `/dev/sda` | `privileged: false`, drop ALL | Micro-VM: own kernel, no host `/dev`. gVisor: blocks raw device | — | — | — |
+| `docker_socket` | Docker API via socket | No socket mount | — | — | — | `/var/run/docker\.sock` regex denied (`plugins/security_gateway.py:24`) |
+| `capabilities` | `CAP_SYS_ADMIN` mount | `drop: ["ALL"]` | Micro-VM: mount only affects guest. gVisor: blocks `mount` | — | — | — |
+| `shared_pid` | `/proc/1/root` access | `hostPID: false` | Micro-VM: separate kernel, no host PID. gVisor: separate namespace | — | — | `/proc/1/root` regex denied (`plugins/security_gateway.py:25`) |
+| `kernel_module` | `insmod` malicious module | No `CAP_SYS_MODULE` | Micro-VM: module loads in guest kernel only. gVisor: blocks syscall | — | — | — |
+| `cgroup_escape` | cgroups v1 `release_agent` | No `CAP_SYS_ADMIN` | Micro-VM: cgroups are guest-only. gVisor: intercepts cgroup ops | — | — | — |
+| `proxy_bypass` | Exfiltrate around proxy | **`--network=none` — no network namespace exists to bypass** | — | — | — | `curl`/`wget`/`nc` in command denylist |
+| `dns_tunnel` | Data via DNS queries | **`--network=none` — no resolver, no sockets** | — | — | — | Pipe-to-network regex denied |
+| `cloud_metadata` | Steal credentials via 169.254.169.254 | **`--network=none`, no SA mounted** | — | iptables drops `169.254.169.254` if any netns ever appears | Stolen creds useless outside perimeter | `169.254.169.254` arg regex denied; `ya29.*` redacted in output |
+| `container_pivot` | SSH to adjacent services | **`--network=none` — no adjacent service reachable** | — | Firewall blocks lateral traffic on orchestrator subnet | — | `ssh`/`scp`/`sftp` in command denylist |
+| `cron_persistence` | Cron job for persistence | Read-only rootfs, non-root, ephemeral container | — | — | — | — |
+| `container_spawn` | Docker socket to spawn containers | No socket, no Docker CLI | — | — | — | `docker`/`podman` in command denylist |
 
 ## 5. Source Code Ingestion
 
@@ -647,7 +612,7 @@ For ad-hoc analysis of repos not worth mirroring, or for specific commits/snapsh
 | `git` CLI | No cloning, no pushing, no credential usage |
 | SSH keys | No authentication to external repos |
 | GitHub/GitLab PATs | No API access to external services |
-| Network access to `github.com`, `gitlab.com` | Not in proxy allowlist |
+| Network access to `github.com`, `gitlab.com` | `--network=none` — no network namespace at all |
 | Write access to code volume | Read-only mount prevents code tampering |
 
 ### 5.5 Source Code Flow (End-to-End)
@@ -719,23 +684,24 @@ and retention policies for audit purposes.
 
 | Why GCE + Firecracker | Enterprise Ring | SandboxBench Validation |
 |---|---|---|
-| Simple: 1 VM, 1 micro-VM sandbox, 1 proxy | VPC-SC, NGFW, on-prem, gateway all same across options | Firecracker micro-VM blocks all 8 escape vectors (own kernel) |
-| Full flexibility: unlimited time, nested containers | Ring 0-1 differ by option; Rings 2-8 identical | Squid + no direct egress blocks all 3 exfil vectors |
+| Simple: 1 VM, 1 micro-VM sandbox, no proxy needed | VPC-SC, VPC firewall, plugin gateway all same across options | Firecracker micro-VM blocks all 8 escape vectors (own kernel) |
+| Full flexibility: unlimited time, nested containers | Ring 0-1 differ by option; Rings 3, 5, 6, 8 identical | `--network=none` blocks all 3 exfil vectors without a proxy |
 | Strongest self-managed: Firecracker micro-VM (hardware isolation) | Choice of compute does not affect enterprise controls | Read-only rootfs blocks all 3 persistence vectors |
 | Low cost: ~$80/mo active | | No socket + no Docker CLI blocks both replication vectors |
 
-The choice between Cloud Run, GCE, and GKE affects **Ring 0-1 only**. Rings 2-8
-(proxy, VPC, NGFW, VPC-SC, Agent Gateway, on-prem, monitoring) are identical
-across all options. This is by design -- the enterprise controls are infrastructure-
-level and don't depend on how the container runs.
+The choice between Cloud Run, GCE, and GKE affects **Ring 0-1 only**. Rings 3, 5,
+6, and 8 (VPC firewall, VPC-SC, SecurityGatewayPlugin, monitoring) are identical
+across all options. Rings 2, 4, 7 are not deployed today because the sandbox has
+no network. This is by design — the enterprise controls are infrastructure-level
+and don't depend on how the container runs.
 
 ### Migration Path
 
 ```mermaid
 graph LR
-    Phase1["Phase 1: GCE + Docker<br/>Single researcher<br/>All 9 rings active<br/>~$80/mo + NGFW"]
-    Phase2["Phase 2: GKE<br/>Team access needed<br/>Add K8s NetworkPolicy<br/>~$200/mo + NGFW"]
-    Phase3["Phase 3: GKE + Cloud Run<br/>Hybrid: GKE for long runs<br/>Cloud Run for short scans<br/>Variable cost + NGFW"]
+    Phase1["Phase 1: GCE + Docker<br/>Single researcher<br/>Rings 0, 1, 3, 5, 6, 8 active<br/>~$80/mo"]
+    Phase2["Phase 2: GKE<br/>Team access needed<br/>Add K8s NetworkPolicy<br/>~$200/mo"]
+    Phase3["Phase 3: GKE + Cloud Run<br/>Hybrid: GKE for long runs<br/>Cloud Run for short scans<br/>Variable cost"]
 
     Phase1 -->|"team grows"| Phase2
     Phase2 -->|"optimize cost"| Phase3
@@ -751,25 +717,23 @@ Once we agree on the approach, the implementation order is:
 
 1. **GCP project + Org Policies** — Create project, enable APIs, set org constraints (no external IPs, no default SA usage)
 2. **IAM** — Create `mythos-orchestrator-sa` and `mythos-sandbox-sa` with scoped roles
-3. **VPC + Firewall** — Create private VPC, subnets, firewall rules, Cloud NAT
+3. **VPC + Firewall** — Create private VPC, subnets, firewall rules (default-deny), Cloud NAT for orchestrator only; host iptables drop for `169.254.169.254`
 4. **VPC Service Controls** — Create access policy, access levels, service perimeter
-5. **Private Service Connect** — PSC endpoints for Vertex AI, GCS, BQ, AR
-6. **Cloud NGFW** — Deploy NGFW endpoint, security profiles, firewall policy
-7. **Cloud VPN** — IPsec tunnel to on-prem proxy (if applicable)
-8. **Source Code Repos** — Set up CSR mirrors for target repos, create GCS staging bucket
-9. **Container images** — Build and push hardened sandbox base image + Squid proxy to Artifact Registry
-10. **Compute** — Deploy GCE VM, install Firecracker (or Kata Containers), deploy sandbox micro-VMs
-11. **Harness** — Deploy ADK-based multi-agent harness: Opus orchestrator, Mythos worker, SecurityGatewayPlugin for tool call validation and output scanning
-13. **Verification pipeline** — Implement two-sandbox trust boundary (Find + Grade). Grade agent verifies in fresh micro-VM with 3/3 reproduction and 5-criteria checklist
-14. **Resilience** — Implement session-ID resume with exponential backoff for multi-hour runs
-15. **Monitoring** — Cloud Audit Logs, log sinks to BigQuery, alert policies
-16. **Validation** — Run SandboxBench escape challenges against the environment to verify containment
+5. **Private Service Connect** — PSC endpoints for Vertex AI, GCS, BQ, AR, CSR
+6. **Source Code Repos** — Set up CSR mirrors for target repos, create GCS staging bucket
+7. **Container images** — Build and push hardened sandbox base image to Artifact Registry (no Squid — sandbox has `--network=none`)
+8. **Compute** — Deploy GCE VM, install Firecracker (or Kata Containers), deploy sandbox micro-VMs with `--network=none`
+9. **Harness** — Deploy ADK-based multi-agent harness: Opus orchestrator, Mythos worker, SecurityGatewayPlugin for tool call validation and output scanning
+10. **Verification pipeline** — Implement two-sandbox trust boundary (Find + Grade). Grade agent verifies in fresh micro-VM with 3/3 reproduction and 5-criteria checklist
+11. **Resilience** — Implement session-ID resume with exponential backoff for multi-hour runs
+12. **Monitoring** — Cloud Audit Logs, log sinks to BigQuery, alert policies (including plugin denial rate and any sandbox netns packet — which should be impossible)
+13. **Validation** — Run SandboxBench escape challenges against the environment to verify containment
 
-Steps 12-13 incorporate industry-standard verification patterns for
+Step 10 incorporates industry-standard verification patterns for
 execution-verified vulnerability discovery — findings are not reported
 until reproduced by an independent agent in a fresh sandbox.
 
-Step 15 is critical: we use our own SandboxBench framework to validate the
+Step 13 is critical: we use our own SandboxBench framework to validate the
 containment before running Mythos. This closes the loop between our prior research
 and this deployment.
 
@@ -777,9 +741,7 @@ and this deployment.
 
 - [ ] Do you have Glasswing access / Vertex AI Mythos endpoint provisioned?
 - [ ] What target software will Mythos analyze? (Affects container image contents and CSR mirror config)
-- [ ] Do you have existing on-prem proxy infrastructure (Zscaler, BlueCoat, Palo Alto)?
-- [ ] Is Cloud NGFW Enterprise already enabled in the org, or does it need procurement?
 - [ ] VPC-SC: is there an existing access policy at the org level, or do we create one?
 - [ ] Should the orchestrator run on the same VM as the sandbox, or on a separate VM?
 - [ ] Any specific GCS bucket naming / BQ dataset conventions?
-- [ ] Budget constraints? (NGFW Enterprise is priced per endpoint-hour, ~$1.75/hr)
+- [ ] Any future requirement for external egress (package pulls at runtime, external APIs)? If yes, Rings 2/4/7 need to be designed in; today they are not deployed.
